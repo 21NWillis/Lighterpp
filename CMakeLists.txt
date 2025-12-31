@@ -23,6 +23,6 @@ endif()
 # syntax: add_executable(NAME source1.cpp source2.cpp ...)
 add_executable(Lighter++ 
     src/main.cpp
-    # You will add src/tensor.cpp here later
+    src/tensor.cpp
     # You will add src/loader.cpp here later
 )

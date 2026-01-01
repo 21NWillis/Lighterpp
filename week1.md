@@ -1,7 +1,7 @@
 Week 1: Setup, Tensors, and The Loader
 
 
-Day 1: The Skeleton
+Day 1: The Skeleton // DONE//
 Time Expectation: 1.5 Hours
 Goal: Initialize the repo and get a clean build system running. No code is better than code that doesn't compile.
 
@@ -19,7 +19,9 @@ Print "Inference Engine Initialized" and sizeof(float).
 Build: Run mkdir build && cd build && cmake .. && make (or equivalent).
 🛑 Commit Before Bed:
 "Initial build system setup. Hello World prints successfully."
-Day 2: The Tensor Class
+
+
+Day 2: The Tensor Class //DONE//
 Time Expectation: 2 - 2.5 Hours
 Goal: Create the data structure that will hold everything.
 

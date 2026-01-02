@@ -74,7 +74,7 @@ Fail Criteria: Random garbage numbers (means endianness issue or wrong struct or
 "Successfully parsed model header configuration from binary file."
 
 
-Day 4: The Weight Loader (Pointer Math)
+Day 4: The Weight Loader (Pointer Math) //Done//
 Time Expectation: 3 Hours
 Goal: Map the rest of the file into memory and assign pointers.
 
@@ -93,7 +93,7 @@ Verify: Print the first 10 floats of token_embedding_table.
 "Model loader maps all weight pointers. Verified first 10 weights match Python reference."
 
 
-Day 5: The First Math (CPU)
+Day 5: The First Math (CPU) //Done//
 Time Expectation: 2.5 Hours
 Goal: Prove we can do math.
 
@@ -110,6 +110,8 @@ Run MatMul. Result should be {1, 2, 3, 4}.
 Run it on Weights: Try multiplying a dummy vector by the token_embedding_table (just the first row). Ensure no Segfaults.
 🛑 Commit Before Bed:
 "Implemented naive CPU MatMul and added unit tests."
+
+
 Day 6: Documentation & Architecture
 Time Expectation: 2 Hours
 Goal: Understand what you are building.

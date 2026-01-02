@@ -25,4 +25,5 @@ add_executable(Lighter++
     src/main.cpp
     src/tensor.cpp
     src/loader.cpp
+    src/ops.cpp
 )

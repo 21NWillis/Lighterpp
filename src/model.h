@@ -15,7 +15,21 @@ struct Config {
 };
 
 struct transformerWeights {
-    //TODO Later
+    float* token_embedding_table;
+    float* rms_att_weight;
+
+    float* wq;
+    float* wk;
+    float* wv;
+    float* wo;
+
+    float* rms_ffn_weight;
+    float* w1;
+    float* w2;
+    float* w3;
+
+    float* rms_final_weight;
+    float* w_cls;
 };
 
 #endif

@@ -1,42 +1,34 @@
-#include <iostream>
+
+
+#include <stdio.h>
 #include <stdlib.h>
-#include "tensor.h"
 #include "model.h"
+#include "loader.h"
+#include "tensor.h"
 
 int main(int argc, char* argv[]) {
-    std::cout << "Inference Engine Initialized" << std::endl;
-    
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <model_path>" << std::endl;
-        return 1;
-    }
-
-    const char* model_path = argv[1];
-
-    FILE *file = fopen(model_path, "rb");
-    if (!file) {
-        std::cerr << "Failed to open model file: " << model_path << std::endl;
+        printf("Usage: %s <model_path>\n", argv[0]);
         return 1;
     }
 
     Config config;
-    if (fread(&config, sizeof(Config), 1, file) != 1) {
-        std::cerr << "Failed to read config from model file: " << model_path << std::endl;
-        fclose(file);
-        return 1;
-    }
+    transformerWeights weights;
+    size_t file_size = 0; 
 
-    printf("Model Config Loaded:\n");
-    printf("  dim:        %d\n", config.dim);
-    printf("  hidden_dim: %d\n", config.hidden_dim);
-    printf("  n_layers:   %d\n", config.n_layers);
-    printf("  n_heads:    %d\n", config.n_heads);
-    printf("  n_kv_heads: %d\n", config.n_kv_heads);
-    printf("  vocab_size: %d\n", config.vocab_size);
-    printf("  seq_len:    %d\n", config.seq_len);
+    float* data = load_model_file(argv[1], &config, &file_size);
+    if (!data) return 1;
 
-    fclose(file);
+    checkpoint_init_weights(&weights, &config, data);
 
+    printf("\n--- Verification ---\n");
+    printf("Config: dim=%d, layers=%d\n", config.dim, config.n_layers);
+    printf("First weight (Embed): %f\n", weights.token_embedding_table[0]);
+    printf("First weight (Attn):  %f\n", weights.wq[0]);
+    
+    printf("Final RMS weight:     %f\n", weights.rms_final_weight[config.dim - 1]);
+
+    free_model_file(data, file_size);
+    
     return 0;
 }
-

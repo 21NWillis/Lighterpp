@@ -24,5 +24,5 @@ endif()
 add_executable(Lighter++ 
     src/main.cpp
     src/tensor.cpp
-    # You will add src/loader.cpp here later
+    src/loader.cpp
 )

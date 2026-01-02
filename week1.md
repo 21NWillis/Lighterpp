@@ -44,7 +44,9 @@ CRITICAL TASK: Implement void print_tensor(Tensor* t, int n_items).
 It should print the first n items nicely. You will use this to debug forever.
 🛑 Commit Before Bed:
 "Implemented Tensor struct, allocation logic, and debug printing."
-Day 3: The Header Parser
+
+
+Day 3: The Header Parser //DONE//
 Time Expectation: 2 Hours
 Goal: Read the configuration from the binary file.
 
@@ -70,6 +72,8 @@ Success Criteria: dim = 288, n_layers = 6, vocab_size = 32000.
 Fail Criteria: Random garbage numbers (means endianness issue or wrong struct order).
 🛑 Commit Before Bed:
 "Successfully parsed model header configuration from binary file."
+
+
 Day 4: The Weight Loader (Pointer Math)
 Time Expectation: 3 Hours
 Goal: Map the rest of the file into memory and assign pointers.
@@ -87,6 +91,8 @@ You need to increment your pointer by tensor_size * sizeof(float) after every as
 Verify: Print the first 10 floats of token_embedding_table.
 🛑 Commit Before Bed:
 "Model loader maps all weight pointers. Verified first 10 weights match Python reference."
+
+
 Day 5: The First Math (CPU)
 Time Expectation: 2.5 Hours
 Goal: Prove we can do math.

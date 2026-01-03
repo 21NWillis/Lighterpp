@@ -45,10 +45,6 @@ void checkpoint_init_weights(transformerWeights* w, Config* p, float* ptr) {
     w->rms_final_weight = ptr;
     ptr += p->dim;
 
-    int head_size_bytes = head_size * sizeof(float);
-    ptr += p->seq_len * head_size;
-    ptr += p->seq_len * head_size; 
-
     // w_cls (Classifier / Un-embedding)
     // In most small Llama models, the weights to turn the vector back into a word
     // are SHARED with the weights used to turn the word into a vector.

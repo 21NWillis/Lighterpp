@@ -15,6 +15,8 @@ The engine currently supports loading `llama2.c` compatible model checkpoints (e
 *   **Target Architecture:** CPU (Phase I), NVIDIA GPU/CUDA (Phase II)
 
 ## Project Structure
+
+```text
 ├── src/
 │   ├── loader/     # Binary file I/O and memory mapping
 │   ├── model/      # Model topology (Config) and weight pointers
@@ -24,6 +26,7 @@ The engine currently supports loading `llama2.c` compatible model checkpoints (e
 │   └── tests.cpp   # Unit testing suite
 ├── CMakeLists.txt  # Build configuration
 └── README.md       # Documentation
+```
 
 ## Getting Started
 1. Build

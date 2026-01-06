@@ -81,9 +81,9 @@ Use this command from inside the build directory:
 
 ### Phase II: The Transformer Architecture (In Progress)
 
-- [ ] State Management: KV Cache allocation and management.
-- [ ] Normalization: RMSNorm implementation.
-- [ ] Positional Embeddings: Rotary Positional Embeddings (RoPE).
+- [x] State Management: KV Cache allocation and management.
+- [x] Normalization: RMSNorm implementation.
+- [x] Positional Embeddings: Rotary Positional Embeddings (RoPE).
 - [ ] Attention: Multi-Head Attention (MHA) logic.
 - [ ] Inference Loop: Full autoregressive generation.
 

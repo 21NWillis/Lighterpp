@@ -19,4 +19,14 @@ void naive_matmul(float* out, float* x, float *w, int n, int d);
 //  n:      Number of elements
 void RMSNorm(float* out, float* x, float* weight, int n);
 
+// Rotary Positional Embedding
+// Parameters:
+//  q:      Query vector (size dim)
+//  k:      Key vector (size kv_dim)
+//  pos:    Position index
+//  dim:    Query dimension
+//  kv_dim: Key dimension
+//  head_size: Head size
+void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size);
+
 #endif

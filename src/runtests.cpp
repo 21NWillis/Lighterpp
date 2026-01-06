@@ -66,10 +66,40 @@ void test_RMSNorm() {
     }
 }
 
+
+void test_rope() {
+    printf("Test: RoPE (Position 0 Identity)... ");
+    int dim = 4;
+    int kv_dim = 4;
+    int head_size = 2;
+    
+    float q[4] = {1, 2, 3, 4};
+    float k[4] = {1, 2, 3, 4};
+    
+    rope(q, k, 0, dim, kv_dim, head_size);
+    
+    bool passed = true;
+    for(int i=0; i<4; i++) {
+        if (!is_close(q[i], (float)(i+1))) passed = false;
+    }
+    
+    if (passed) printf(GREEN "PASSED" RESET "\n");
+    else printf(RED "FAILED" RESET "\n");
+
+    printf("Test: RoPE (Position 1 Movement)... ");
+    float q2[4] = {1, 1, 1, 1};
+    float k2[4] = {1, 1, 1, 1};
+    rope(q2, k2, 1, 4, 4, 2);
+    
+    if (!is_close(q2[0], 1.0f) && !is_close(q2[1], 1.0f)) printf(GREEN "PASSED" RESET "\n");
+    else printf(RED "FAILED" RESET " (Vectors did not rotate)\n");
+}
+
 int main() {
     printf("--- Lighter++ Unit Tests ---\n");
     test_matmul_square();
     test_matmul_rectangular();
     test_RMSNorm();
+    test_rope();
     return 0;
 }

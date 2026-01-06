@@ -29,3 +29,25 @@ void RMSNorm(float* out, float* x, float* weight, int n) {
 
     return;
 }
+
+void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size) {
+    for (int i = 0; i < dim; i+=2) {
+        int head_dim = i % head_size;
+        float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
+        float val = pos * freq;
+        float fcos = cosf(val);
+        float fsin = sinf(val);
+
+        float q0 = q[i];
+        float q1 = q[i+1];
+        q[i]   = q0 * fcos - q1 * fsin;
+        q[i+1] = q0 * fsin + q1 * fcos;
+
+        if (i < kv_dim) {
+            float k0 = k[i];
+            float k1 = k[i+1];
+            k[i]   = k0 * fcos - k1 * fsin;
+            k[i+1] = k0 * fsin + k1 * fcos;
+        }
+    }
+}

@@ -13,7 +13,7 @@ int is_close(float a, float b) {
     return fabsf(a - b) < 1e-4f;
 }
 
-void test_matmul_square() {
+int test_matmul_square() {
     printf("Test: Square MatMul (Vector-Matrix)... ");
     
     float x[4] = {1, 2, 3, 4}; 
@@ -24,12 +24,14 @@ void test_matmul_square() {
 
     if (is_close(out[0], 1.0f) && is_close(out[1], 2.0f)) {
         printf(GREEN "PASSED" RESET "\n");
+        return 0;
     } else {
         printf(RED "FAILED" RESET " (Got %f, %f, Expected 1.0, 2.0)\n", out[0], out[1]);
+        return 1;
     }
 }
 
-void test_matmul_rectangular() {
+int test_matmul_rectangular() {
     printf("Test: Rectangular MatMul... ");
     
     float x[3] = {1, 2, 3};
@@ -45,12 +47,14 @@ void test_matmul_rectangular() {
     
     if (is_close(out[0], 4.5f) && is_close(out[1], 5.0f)) {
         printf(GREEN "PASSED" RESET "\n");
+        return 0;
     } else {
         printf(RED "FAILED" RESET " (Got %f, %f, Expected 4.5, 5.0)\n", out[0], out[1]);
+        return 1;
     }
 }
 
-void test_RMSNorm() {
+int test_RMSNorm() {
     printf("Test: RMSNorm... ");
     float x[4] = {2, 2, 2, 2};
     float weight[4] = {1, 1, 1, 1};
@@ -61,13 +65,16 @@ void test_RMSNorm() {
 
     if (is_close(out[0], 1.0f) && is_close(out[1], 1.0f) && is_close(out[2], 1.0f) && is_close(out[3], 1.0f)) {
         printf(GREEN "PASSED" RESET "\n");
+        return 0;
     } else {
         printf(RED "FAILED" RESET "\n");
+        return 1;
     }
 }
 
 
-void test_rope() {
+int test_rope() {
+    int failures = 0;
     printf("Test: RoPE (Position 0 Identity)... ");
     int dim = 4;
     int kv_dim = 4;
@@ -83,23 +90,40 @@ void test_rope() {
         if (!is_close(q[i], (float)(i+1))) passed = false;
     }
     
-    if (passed) printf(GREEN "PASSED" RESET "\n");
-    else printf(RED "FAILED" RESET "\n");
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+    } else {
+        printf(RED "FAILED" RESET "\n");
+        failures++;
+    }
 
     printf("Test: RoPE (Position 1 Movement)... ");
     float q2[4] = {1, 1, 1, 1};
     float k2[4] = {1, 1, 1, 1};
+    
     rope(q2, k2, 1, 4, 4, 2);
     
-    if (!is_close(q2[0], 1.0f) && !is_close(q2[1], 1.0f)) printf(GREEN "PASSED" RESET "\n");
-    else printf(RED "FAILED" RESET " (Vectors did not rotate)\n");
+    if (!is_close(q2[0], 1.0f) && !is_close(q2[1], 1.0f)) {
+        printf(GREEN "PASSED" RESET "\n");
+    } else {
+        printf(RED "FAILED" RESET " (Vectors did not rotate)\n");
+        failures++;
+    }
+    return failures;
 }
 
 int main() {
     printf("--- Lighter++ Unit Tests ---\n");
-    test_matmul_square();
-    test_matmul_rectangular();
-    test_RMSNorm();
-    test_rope();
-    return 0;
+    int failures = 0;
+    failures += test_matmul_square();
+    failures += test_matmul_rectangular();
+    failures += test_RMSNorm();
+    failures += test_rope();
+    
+    if (failures == 0) {
+        printf("ALL TESTS PASSED\n");
+    } else {
+        printf("%d TESTS FAILED\n", failures);
+    }
+    return failures;
 }

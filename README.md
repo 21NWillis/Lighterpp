@@ -1,3 +1,5 @@
+![Build Status](https://github.com/21NWillis/Lighterpp/actions/workflows/ci.yml/badge.svg)
+
 # Lighter++: A C++/CUDA LLM Inference Engine
 
 **Author:** Nate Willis  

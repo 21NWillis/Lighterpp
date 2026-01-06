@@ -1,6 +1,22 @@
 #ifndef OPS_H
 #define OPS_H
 
+// Naive Matrix Multiplication
+// C = A * B
+// Parameters:
+//  out: Output vector (size n)
+//  x:   Input vector (size d)
+//  w:   Weight matrix (n rows, d columns) - flattened, row-major
+//  n:   Output dimension (rows of w)
+//  d:   Input dimension (size of x, columns of w)
 void naive_matmul(float* out, float* x, float *w, int n, int d);
+
+// Root Mean Square Normalization
+// Parameters:
+//  out:    Output vector (size n)
+//  x:      Input vector (size n)
+//  weight: Scaling weights vector (size n)
+//  n:      Number of elements
+void RMSNorm(float* out, float* x, float* weight, int n);
 
 #endif

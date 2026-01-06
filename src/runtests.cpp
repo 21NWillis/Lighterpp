@@ -50,9 +50,26 @@ void test_matmul_rectangular() {
     }
 }
 
+void test_RMSNorm() {
+    printf("Test: RMSNorm... ");
+    float x[4] = {2, 2, 2, 2};
+    float weight[4] = {1, 1, 1, 1};
+    
+    float out[4] = {0};
+
+    RMSNorm(out, x, weight, 4);
+
+    if (is_close(out[0], 1.0f) && is_close(out[1], 1.0f) && is_close(out[2], 1.0f) && is_close(out[3], 1.0f)) {
+        printf(GREEN "PASSED" RESET "\n");
+    } else {
+        printf(RED "FAILED" RESET "\n");
+    }
+}
+
 int main() {
     printf("--- Lighter++ Unit Tests ---\n");
     test_matmul_square();
     test_matmul_rectangular();
+    test_RMSNorm();
     return 0;
 }

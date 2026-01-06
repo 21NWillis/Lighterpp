@@ -23,7 +23,7 @@ The engine currently supports loading `llama2.c` compatible model checkpoints (e
 │   ├── tensor/     # Tensor structures and data definitions
 │   ├── ops/        # Math kernels (MatMul, RMSNorm, RoPE)
 │   ├── main.cpp    # Application entry point
-│   └── tests.cpp   # Unit testing suite
+│   └── runtests.cpp   # Unit testing suite
 ├── CMakeLists.txt  # Build configuration
 └── README.md       # Documentation
 ```

@@ -29,4 +29,10 @@ void RMSNorm(float* out, float* x, float* weight, int n);
 //  head_size: Head size
 void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size);
 
+// Softmax Function
+// Parameters:
+//  x:    Input vector (modified in-place to become probabilities)
+//  size: Number of elements in the vector
+void softmax(float* x, int size);
+
 #endif

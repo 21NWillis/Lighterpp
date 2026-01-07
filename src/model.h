@@ -69,4 +69,14 @@ void free_run_state(RunState* s);
 //  pos: Current token position index in the sequence
 void attention(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
 
+// Transformer Block (Layer)
+// Parameters:
+//  x: Input/Output activation vector (size dim)
+//  s: Runtime state
+//  w: Weights
+//  p: Config
+//  layer: Layer index
+//  pos: Token position
+void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
+
 #endif

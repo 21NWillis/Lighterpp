@@ -35,4 +35,12 @@ void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size);
 //  size: Number of elements in the vector
 void softmax(float* x, int size);
 
+// SwiGLU Activation Function
+// Calculates: hb = (h1 * sigmoid(h1)) * h3
+// Parameters:
+//  hb:   Output buffer (can alias h1 or h3)
+//  h1:   Gate projection vector
+//  h3:   Up projection vector
+//  size: Dimension of vectors
+void swiglu(float* hb, float* h1, float* h3, int size);
 #endif

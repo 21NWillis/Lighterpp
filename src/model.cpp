@@ -120,3 +120,31 @@ void attention(float* x, RunState* s, transformerWeights* w, Config* p, int laye
     // 5. Output Projection
     naive_matmul(x, s->xb, w->wo, dim, dim);
 }
+
+void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
+    int dim = p->dim;
+    int hidden_dim = p->hidden_dim;
+
+    // 1. Attention Block
+    RMSNorm(s->xb, x, w->rms_att_weight, dim);
+    attention(s->xb, s, w, p, layer, pos);
+
+    for (int i = 0; i < dim; i++) {
+        x[i] += s->xb[i];
+    }
+
+    // 2. FeedForward Block
+    RMSNorm(s->xb, x, w->rms_ffn_weight, dim);
+
+    naive_matmul(s->hb, s->xb, w->w1, hidden_dim, dim);
+    
+    naive_matmul(s->he, s->xb, w->w3, hidden_dim, dim);   
+
+    swiglu(s->hb, s->hb, s->he, hidden_dim);
+
+    naive_matmul(s->xb, s->hb, w->w2, dim, hidden_dim);
+
+    for (int i = 0; i < dim; i++) {
+        x[i] += s->xb[i];
+    }
+}

@@ -12,44 +12,51 @@
 void checkpoint_init_weights(transformerWeights* w, Config* p, float* ptr) {
     int head_size = p->dim/ p->n_heads;
 
+    // Token Embedding Table: (vocab_size, dim)
     w->token_embedding_table = ptr;
     ptr += p->vocab_size * p->dim;
 
+    // Attention RMSNorm weights: (n_layers, dim)
     w->rms_att_weight = ptr;
     ptr += p->n_layers * p->dim;
 
+    // Query projection: (n_layers, dim, n_heads * head_size)
     w->wq = ptr;
     ptr += p->n_layers * p->dim * (p->n_heads * head_size);
 
+    // Key projection: (n_layers, dim, n_kv_heads * head_size)
     w->wk = ptr;
     ptr += p->n_layers * p->dim * (p->n_heads * head_size);
 
+    // Value projection: (n_layers, dim, n_kv_heads * head_size)
     w->wv = ptr;
     ptr += p->n_layers * p->dim * (p->n_heads * head_size);
 
+    // Output projection: (n_layers, n_heads * head_size, dim)
     w->wo = ptr;
     ptr += p->n_layers * (p->n_heads * head_size) * p->dim;
 
+    // FeedForward RMSNorm weights: (n_layers, dim)
     w->rms_ffn_weight = ptr;
     ptr += p->n_layers * p->dim;
 
+    // FFN Gate projection (w1): (n_layers, dim, hidden_dim)
     w->w1 = ptr;
     ptr += p->n_layers * p->dim * p->hidden_dim;
 
+    // FFN Down projection (w2): (n_layers, hidden_dim, dim)
     w->w2 = ptr;
     ptr += p->n_layers * p->hidden_dim * p->dim;
 
+    // FFN Up projection (w3): (n_layers, dim, hidden_dim)
     w->w3 = ptr;
     ptr += p->n_layers * p->dim * p->hidden_dim;
 
+    // Final RMSNorm weights: (dim)
     w->rms_final_weight = ptr;
     ptr += p->dim;
 
     // w_cls (Classifier / Un-embedding)
-    // In most small Llama models, the weights to turn the vector back into a word
-    // are SHARED with the weights used to turn the word into a vector.
-    // This is called "Weight Tying".
-    // We point w_cls back to the start of the array.
     w->w_cls = w->token_embedding_table;
 }
 

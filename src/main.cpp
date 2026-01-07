@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "model.h"
 #include "loader.h"
 #include "tensor.h"
+#include "ops.h"
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -34,22 +36,52 @@ int main(int argc, char** argv) {
 
     checkpoint_init_weights(&weights, &config, data);
 
-    printf("\n--- Model Statistics ---\n");
+    printf("\n--- Model Configuration ---\n");
     printf("Dim: %d\n", config.dim);
     printf("Layers: %d\n", config.n_layers);
     printf("Heads: %d\n", config.n_heads);
+    printf("KV Heads: %d\n", config.n_kv_heads);
     printf("Vocab: %d\n", config.vocab_size);
-
-    printf("\n--- Weight Verification ---\n");
-    printf("Token Emb [0]:  %f\n", weights.token_embedding_table[0]);
-    printf("Attn WQ [0]:    %f\n", weights.wq[0]);
-    printf("Attn WK [0]:    %f\n", weights.wk[0]);
-    printf("Final RMS [0]:  %f\n", weights.rms_final_weight[0]);
+    printf("Seq Len: %d\n", config.seq_len);
     
-    state.key_cache[cache_elements - 1] = 1234.5f;
-    printf("Key Cache Last Element: %f\n", state.key_cache[cache_elements - 1]);
-
+    printf("\n--- Running Inference ---\n");
     
+    int token = 1;
+    int pos = 0;
+    
+    float* content_row = weights.token_embedding_table + token * config.dim;
+    memcpy(state.x, content_row, config.dim * sizeof(float));
+    
+    // Forward pass
+    for (int layer = 0; layer < config.n_layers; layer++) {
+        transformer_block(state.x, &state, &weights, &config, layer, pos);
+    }
+    
+    // Final normalization
+    RMSNorm(state.x, state.x, weights.rms_final_weight, config.dim);
+    
+    // Classifier (get logits)
+    naive_matmul(state.logits, state.x, weights.w_cls, config.vocab_size, config.dim);
+    
+    // Find the token with highest probability (argmax)
+    int next_token = 0;
+    float max_val = state.logits[0];
+    for (int i = 1; i < config.vocab_size; i++) {
+        if (state.logits[i] > max_val) {
+            max_val = state.logits[i];
+            next_token = i;
+        }
+    }
+    
+    printf("Input Token: %d\n", token);
+    printf("Next Token: %d (logit: %f)\n", next_token, max_val);
+    printf("First 5 logits: ");
+    for (int i = 0; i < 5; i++) {
+        printf("%f ", state.logits[i]);
+    }
+    printf("\n");
+
+
     free_model_file(data, file_size);
     free_run_state(&state);
     printf("\nModel Unloaded. Exiting.\n");

@@ -72,3 +72,15 @@ void softmax(float* x, int size) {
 
     return;
 }
+
+// SwiGLU Function
+void swiglu(float* hb, float* h1, float* h3, int size) {
+    for (int i = 0; i < size; i++) {
+        float val = h1[i];
+
+        float sig = 1.0f / (1.0f + expf(-val));
+        
+        hb[i] = (val * sig) * h3[i]; 
+    }
+    return;
+}

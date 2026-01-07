@@ -86,8 +86,13 @@ Use this command from inside the build directory:
 - [x] State Management: KV Cache allocation and management.
 - [x] Normalization: RMSNorm implementation.
 - [x] Positional Embeddings: Rotary Positional Embeddings (RoPE).
-- [ ] Attention: Multi-Head Attention (MHA) logic.
-- [ ] Inference Loop: Full autoregressive generation.
+- [x] Activation Functions: Softmax and SwiGLU.
+- [x] Attention: Multi-Head Attention with Grouped Query Attention (GQA) support.
+- [x] FeedForward Network: Gate, Up, and Down projections with SwiGLU.
+- [x] Transformer Block: Full layer with residual connections.
+- [x] Single-Token Inference: Forward pass through all layers.
+- [ ] Multi-Token Generation: Autoregressive sampling loop.
+- [ ] Tokenizer: Decode token IDs to text.
 
 ### Phase III: CUDA Acceleration (Future)
 

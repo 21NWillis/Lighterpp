@@ -79,4 +79,27 @@ void attention(float* x, RunState* s, transformerWeights* w, Config* p, int laye
 //  pos: Token position
 void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
 
+// Sample from logits
+// Parameters:
+//  logits: Logits vector (size vocab_size)
+//  vocab_size: Vocabulary size
+//  temperature: Randomness (0.0 = argmax, 1.0 = neutral)
+//  topp: Nucleus sampling threshold (0.0 to 1.0, 1.0 = off)
+// Returns:
+//  Selected token index
+int sample(float* logits, int vocab_size, float temperature, float topp);
+
+// Forward Pass
+// Parameters:
+//  token: Input token ID
+//  pos: Token position
+//  s: RunState
+//  w: Weights
+//  p: Config
+//  temperature: Sampling temperature
+//  topp: Top-p threshold
+// Returns:
+//  Next token index
+int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, float temperature, float topp);
+
 #endif

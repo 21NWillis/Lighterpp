@@ -1,16 +1,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "model.h"
 #include "loader.h"
 #include "tensor.h"
 #include "ops.h"
+#include "tokenizer.h"
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        printf("Usage: %s <model_path>\n", argv[0]);
+    if (argc < 3) {
+        printf("Usage: %s <model_path> <tokenizer_path> [temperature]\n", argv[0]);
         return 1;
     }
+    
+    float temperature = (argc >= 4) ? (float)atof(argv[3]) : 0.9f;
+    float topp = 0.9f;
+    srand(time(NULL));
 
     Config config;
     transformerWeights weights;
@@ -25,6 +31,11 @@ int main(int argc, char** argv) {
         printf("Error: Failed to load model.\n");
         return 1;
     }
+
+    printf("Loading tokenizer: %s\n", argv[2]);
+    
+    Tokenizer tokenizer;
+    load_tokenizer(&tokenizer, argv[2], config.vocab_size);
 
     malloc_run_state(&state, &config);
 
@@ -47,40 +58,16 @@ int main(int argc, char** argv) {
     printf("\n--- Running Inference ---\n");
     
     int token = 1;
-    int pos = 0;
-    
-    float* content_row = weights.token_embedding_table + token * config.dim;
-    memcpy(state.x, content_row, config.dim * sizeof(float));
-    
-    // Forward pass
-    for (int layer = 0; layer < config.n_layers; layer++) {
-        transformer_block(state.x, &state, &weights, &config, layer, pos);
-    }
-    
-    // Final normalization
-    RMSNorm(state.x, state.x, weights.rms_final_weight, config.dim);
-    
-    // Classifier (get logits)
-    naive_matmul(state.logits, state.x, weights.w_cls, config.vocab_size, config.dim);
-    
-    // Find the token with highest probability (argmax)
-    int next_token = 0;
-    float max_val = state.logits[0];
-    for (int i = 1; i < config.vocab_size; i++) {
-        if (state.logits[i] > max_val) {
-            max_val = state.logits[i];
-            next_token = i;
-        }
-    }
-    
-    printf("Input Token: %d\n", token);
-    printf("Next Token: %d (logit: %f)\n", next_token, max_val);
-    printf("First 5 logits: ");
-    for (int i = 0; i < 5; i++) {
-        printf("%f ", state.logits[i]);
-    }
-    printf("\n");
+    int steps = 256;
 
+    for (int pos = 0; pos < steps; pos++) {
+        token = forward(token, pos, &state, &weights, &config, temperature, topp);
+        char* token_str = decode_token(&tokenizer, token);
+        printf("%s", token_str);
+        fflush(stdout);
+    }
+    
+    printf("\n");
 
     free_model_file(data, file_size);
     free_run_state(&state);

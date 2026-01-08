@@ -61,10 +61,13 @@ void attention(float* x, RunState* s, transformerWeights* w, Config* p, int laye
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = dim / p->n_heads;
 
+    int layer_offset_qkv = layer * dim * dim;
+    int layer_offset_kv = layer * kv_dim * dim;
+
     // 1. QKV Projections
-    naive_matmul(s->q, x, w->wq, dim, dim);
-    naive_matmul(s->k, x, w->wk, kv_dim, dim);
-    naive_matmul(s->v, x, w->wv, kv_dim, dim);
+    naive_matmul(s->q, x, w->wq + layer_offset_qkv, dim, dim);
+    naive_matmul(s->k, x, w->wk + layer_offset_kv, kv_dim, dim);
+    naive_matmul(s->v, x, w->wv + layer_offset_kv, kv_dim, dim);
 
     // 2. RoPE
     rope(s->q, s->k, pos, dim, kv_dim, head_size);
@@ -118,15 +121,18 @@ void attention(float* x, RunState* s, transformerWeights* w, Config* p, int laye
     }
 
     // 5. Output Projection
-    naive_matmul(x, s->xb, w->wo, dim, dim);
+    naive_matmul(x, s->xb, w->wo + layer_offset_qkv, dim, dim);
 }
 
 void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
     int dim = p->dim;
     int hidden_dim = p->hidden_dim;
 
+    int layer_offset_ffn = layer * hidden_dim * dim;
+    int layer_offset_norm = layer * dim;
+
     // 1. Attention Block
-    RMSNorm(s->xb, x, w->rms_att_weight, dim);
+    RMSNorm(s->xb, x, w->rms_att_weight + layer_offset_norm, dim);
     attention(s->xb, s, w, p, layer, pos);
 
     for (int i = 0; i < dim; i++) {
@@ -134,17 +140,118 @@ void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, 
     }
 
     // 2. FeedForward Block
-    RMSNorm(s->xb, x, w->rms_ffn_weight, dim);
+    RMSNorm(s->xb, x, w->rms_ffn_weight + layer_offset_norm, dim);
 
-    naive_matmul(s->hb, s->xb, w->w1, hidden_dim, dim);
+    naive_matmul(s->hb, s->xb, w->w1 + layer_offset_ffn, hidden_dim, dim);
     
-    naive_matmul(s->he, s->xb, w->w3, hidden_dim, dim);   
+    naive_matmul(s->he, s->xb, w->w3 + layer_offset_ffn, hidden_dim, dim);   
 
     swiglu(s->hb, s->hb, s->he, hidden_dim);
 
-    naive_matmul(s->xb, s->hb, w->w2, dim, hidden_dim);
+    naive_matmul(s->xb, s->hb, w->w2 + layer_offset_ffn, dim, hidden_dim);
 
     for (int i = 0; i < dim; i++) {
         x[i] += s->xb[i];
     }
+}
+
+typedef struct {
+    float prob;
+    int index;
+} ProbIndex;
+
+int compare_prob(const void* a, const void* b) {
+    ProbIndex* pa = (ProbIndex*)a;
+    ProbIndex* pb = (ProbIndex*)b;
+    if (pa->prob > pb->prob) return -1;
+    if (pa->prob < pb->prob) return 1;
+    return 0;
+}
+
+int sample(float* logits, int vocab_size, float temperature, float topp) {
+    if (temperature == 0.0f) {
+        // Argmax
+        int max_idx = 0;
+        float max_val = logits[0];
+        for (int i = 1; i < vocab_size; i++) {
+            if (logits[i] > max_val) {
+                max_val = logits[i];
+                max_idx = i;
+            }
+        }
+        return max_idx;
+    } 
+    
+    // Apply temperature
+    for (int i = 0; i < vocab_size; i++) {
+        logits[i] /= temperature;
+    }
+    
+    softmax(logits, vocab_size);
+
+    float r = (float)rand() / (float)RAND_MAX;
+
+    if (topp <= 0.0f || topp >= 1.0f) {
+        float cumulative_prob = 0.0f;
+        for (int i = 0; i < vocab_size; i++) {
+            cumulative_prob += logits[i];
+            if (r < cumulative_prob) {
+                return i;
+            }
+        }
+        return vocab_size - 1;
+    } 
+    
+    else {
+        // Top-p (Nucleus) sampling
+        ProbIndex* prob_indices = (ProbIndex*)malloc(vocab_size * sizeof(ProbIndex));
+        for (int i = 0; i < vocab_size; i++) {
+            prob_indices[i].index = i;
+            prob_indices[i].prob = logits[i];
+        }
+        
+        qsort(prob_indices, vocab_size, sizeof(ProbIndex), compare_prob);
+        
+        float cumulative_prob = 0.0f;
+        int last_idx = vocab_size - 1;
+        for (int i = 0; i < vocab_size; i++) {
+            cumulative_prob += prob_indices[i].prob;
+            if (cumulative_prob > topp) {
+                last_idx = i;
+                break;
+            }
+        }
+        
+        float r_scaled = r * cumulative_prob; 
+        float current_prob = 0.0f;
+        for (int i = 0; i <= last_idx; i++) {
+            current_prob += prob_indices[i].prob;
+            if (r_scaled < current_prob) {
+                int res = prob_indices[i].index;
+                free(prob_indices);
+                return res;
+            }
+        }
+        
+        int res = prob_indices[last_idx].index;
+        free(prob_indices);
+        return res;
+    }
+}
+
+int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, float temperature, float topp) {
+    int dim = p->dim;
+    
+    float* content_row = w->token_embedding_table + token * dim;
+    memcpy(s->x, content_row, dim * sizeof(float));
+
+    for (int layer = 0; layer < p->n_layers; layer++) {
+        transformer_block(s->x, s, w, p, layer, pos);
+    }
+
+    RMSNorm(s->x, s->x, w->rms_final_weight, dim);
+
+    naive_matmul(s->logits, s->x, w->w_cls, p->vocab_size, dim);
+    
+    return sample(s->logits, p->vocab_size, temperature, topp);
 }

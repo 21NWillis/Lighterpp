@@ -19,7 +19,7 @@ else()
 endif()
 
 # Define the executables
-set (SOURCES src/tensor.cpp src/loader.cpp src/ops.cpp src/model.cpp)
+set (SOURCES src/tensor.cpp src/loader.cpp src/ops.cpp src/model.cpp src/tokenizer.cpp)
 
 
 add_executable(Lighter++ src/main.cpp ${SOURCES})

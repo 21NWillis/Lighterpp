@@ -26,11 +26,11 @@ void checkpoint_init_weights(transformerWeights* w, Config* p, float* ptr) {
 
     // Key projection: (n_layers, dim, n_kv_heads * head_size)
     w->wk = ptr;
-    ptr += p->n_layers * p->dim * (p->n_heads * head_size);
+    ptr += p->n_layers * p->dim * (p->n_kv_heads * head_size);
 
     // Value projection: (n_layers, dim, n_kv_heads * head_size)
     w->wv = ptr;
-    ptr += p->n_layers * p->dim * (p->n_heads * head_size);
+    ptr += p->n_layers * p->dim * (p->n_kv_heads * head_size);
 
     // Output projection: (n_layers, n_heads * head_size, dim)
     w->wo = ptr;

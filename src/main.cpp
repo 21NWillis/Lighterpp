@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
     
     int token = 1;
     int steps = 256;
+    clock_t start = clock();
 
     for (int pos = 0; pos < steps; pos++) {
         token = forward(token, pos, &state, &weights, &config, temperature, topp);
@@ -67,7 +68,13 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
     
-    printf("\n");
+    clock_t end = clock();
+    double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
+    
+    printf("\n\n--- Statistics ---\n");
+    printf("Tokens generated: %d\n", steps);
+    printf("Elapsed time: %.2f s\n", elapsed);
+    printf("Tokens per second: %.2f tok/s\n", (float)steps / elapsed);
 
     free_model_file(data, file_size);
     free_run_state(&state);

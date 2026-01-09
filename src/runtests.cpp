@@ -40,10 +40,10 @@ int test_attention_smoke() {
     for(int i=0; i<dim; i++) x[i] = 0.5f;
     
     // Run Attention at pos 0
-    attention(x, &s, &w, &config, 0, 0);
+    attention(s.xb2, s.xb, &s, &w, &config, 0, 0);
     
     // Run Attention at pos 1
-    attention(x, &s, &w, &config, 0, 1);
+    attention(s.xb2, s.xb, &s, &w, &config, 0, 1);
     
     // Cleanup
     free(w.wq); free(w.wk); free(w.wv); free(w.wo);

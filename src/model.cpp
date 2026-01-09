@@ -15,6 +15,7 @@ void malloc_run_state(RunState* s, Config* p) {
     // ACTIVATION BUFFERS
     s->x = (float*)calloc(dim, sizeof(float));      // Input/State vector
     s->xb = (float*)calloc(dim, sizeof(float));     // Residual branch
+    s->xb2 = (float*)calloc(dim, sizeof(float));    // Extra buffer for projections
     s->q = (float*)calloc(dim, sizeof(float));      // Query vector
     s->k = (float*)calloc(kv_dim, sizeof(float));   // Key vector
     s->v = (float*)calloc(kv_dim, sizeof(float));   // Value vector
@@ -44,6 +45,7 @@ void malloc_run_state(RunState* s, Config* p) {
 void free_run_state(RunState* s) {
     free(s->x);
     free(s->xb);
+    free(s->xb2);
     free(s->hb);
     free(s->he);
     free(s->q);
@@ -56,7 +58,7 @@ void free_run_state(RunState* s) {
 }
 
 
-void attention(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
+void attention(float* out, float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
     int dim = p->dim;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = dim / p->n_heads;
@@ -65,9 +67,9 @@ void attention(float* x, RunState* s, transformerWeights* w, Config* p, int laye
     int layer_offset_kv = layer * kv_dim * dim;
 
     // 1. QKV Projections
-    naive_matmul(s->q, x, w->wq + layer_offset_qkv, dim, dim);
-    naive_matmul(s->k, x, w->wk + layer_offset_kv, kv_dim, dim);
-    naive_matmul(s->v, x, w->wv + layer_offset_kv, kv_dim, dim);
+    naive_matmul(s->q, in, w->wq + layer_offset_qkv, dim, dim);
+    naive_matmul(s->k, in, w->wk + layer_offset_kv, kv_dim, dim);
+    naive_matmul(s->v, in, w->wv + layer_offset_kv, kv_dim, dim);
 
     // 2. RoPE
     rope(s->q, s->k, pos, dim, kv_dim, head_size);
@@ -121,7 +123,7 @@ void attention(float* x, RunState* s, transformerWeights* w, Config* p, int laye
     }
 
     // 5. Output Projection
-    naive_matmul(x, s->xb, w->wo + layer_offset_qkv, dim, dim);
+    naive_matmul(out, s->xb, w->wo + layer_offset_qkv, dim, dim);
 }
 
 void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
@@ -132,26 +134,27 @@ void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, 
     int layer_offset_norm = layer * dim;
 
     // 1. Attention Block
+    // x -> s->xb (normed) -> s->xb2 (attention output)
     RMSNorm(s->xb, x, w->rms_att_weight + layer_offset_norm, dim);
-    attention(s->xb, s, w, p, layer, pos);
+    attention(s->xb2, s->xb, s, w, p, layer, pos);
 
     for (int i = 0; i < dim; i++) {
-        x[i] += s->xb[i];
+        x[i] += s->xb2[i];
     }
 
     // 2. FeedForward Block
+    // x -> s->xb (normed) -> s->xb2 (FFN output)
     RMSNorm(s->xb, x, w->rms_ffn_weight + layer_offset_norm, dim);
 
     naive_matmul(s->hb, s->xb, w->w1 + layer_offset_ffn, hidden_dim, dim);
-    
     naive_matmul(s->he, s->xb, w->w3 + layer_offset_ffn, hidden_dim, dim);   
 
     swiglu(s->hb, s->hb, s->he, hidden_dim);
 
-    naive_matmul(s->xb, s->hb, w->w2 + layer_offset_ffn, dim, hidden_dim);
+    naive_matmul(s->xb2, s->hb, w->w2 + layer_offset_ffn, dim, hidden_dim);
 
     for (int i = 0; i < dim; i++) {
-        x[i] += s->xb[i];
+        x[i] += s->xb2[i];
     }
 }
 

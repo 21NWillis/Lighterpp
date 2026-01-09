@@ -86,8 +86,8 @@ float* load_model_file(const char* checkpoint_path, Config* config, size_t* file
 
     Config* file_config = (Config*)addr;
     *config = *file_config;
-
-    float* weightspointer = (float*)((char*)addr + sizeof(Config));
+    
+    float* weightspointer = (float*)((char*)addr + 28);
 
     *file_size_out = file_size;
 
@@ -98,6 +98,6 @@ float* load_model_file(const char* checkpoint_path, Config* config, size_t* file
 }
 
 void free_model_file(float* data, size_t file_size) {
-    void* mmap_start = (void*)((char*)data - sizeof(Config));
+    void* mmap_start = (void*)((char*)data - 28);
     munmap(mmap_start, file_size);
 }

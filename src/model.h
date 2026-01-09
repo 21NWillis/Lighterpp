@@ -42,6 +42,7 @@ struct RunState {
     // Current state buffers
     float *x;      // Activation at current layer (dim)
     float *xb;     // Buffer for attention/ffn output (dim)
+    float *xb2;    // Second buffer to avoid in-place matmul issues (dim)
     float *hb;     // Buffer for hidden state (hidden_dim)
     float *he;     // Buffer for hidden state (hidden_dim) - sometimes needed
     float *q;      // Query vector (dim)
@@ -67,7 +68,7 @@ void free_run_state(RunState* s);
 //  p: Model configuration
 //  layer: Current layer index (0 to n_layers-1)
 //  pos: Current token position index in the sequence
-void attention(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
+void attention(float* out, float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
 
 // Transformer Block (Layer)
 // Parameters:

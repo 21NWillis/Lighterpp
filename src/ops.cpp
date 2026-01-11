@@ -7,9 +7,6 @@
 
 // output vector, input vector, weight matrix, number of rows/size of output vector, number of columns/size of input vector (same as width of weight matrix)
 void naive_matmul(float* out, float* x, float *w, int n, int d) {
-#ifdef USE_CUDA
-    cuda_gemv(out, x, w, n, d);
-#else
     for (int i = 0; i < n; i++) {
         float val = 0.0f;
         for (int k = 0; k < d; k++) {
@@ -17,8 +14,6 @@ void naive_matmul(float* out, float* x, float *w, int n, int d) {
         }
         out[i] = val;
     }
-#endif
-    return;
 }
 
 // output vector, input vector, weight vector, size of vector
@@ -34,8 +29,6 @@ void RMSNorm(float* out, float* x, float* weight, int n) {
     for (int i = 0; i < n; i++) {
         out[i] = x[i] * ss * weight[i];
     }
-
-    return;
 }
 
 void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size) {

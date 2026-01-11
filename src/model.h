@@ -1,6 +1,11 @@
 #ifndef MODEL_H
 #define MODEL_H
 
+#ifdef USE_CUDA
+#include "kernels.cuh"
+#include <cuda_runtime.h>
+#endif
+
 #include "tensor.h"
 
 // Hyperparameters for the Llama architecture
@@ -35,6 +40,25 @@ struct transformerWeights {
     // Final Output
     float* rms_final_weight; // (dim) Final RMSNorm
     float* w_cls; // (vocab_size, dim) Classifier weights (usually untied)
+
+    //CUDA - Same pointers as above
+    #ifdef USE_CUDA
+    float* d_token_embedding_table;
+
+    float* d_rms_att_weight;
+    float* d_wq;
+    float* d_wk;
+    float* d_wv;
+    float* d_wo;
+
+    float* d_rms_ffn_weight;
+    float* d_w1;
+    float* d_w2;
+    float* d_w3;
+
+    float* d_rms_final_weight;
+    float* d_w_cls;
+    #endif
 };
 
 // Runtime state storage (activation buffers and KV cache)
@@ -55,6 +79,22 @@ struct RunState {
     // Shape: (n_layers, kv_heads, seq_len, head_size)
     float *key_cache;   
     float *value_cache;
+
+    #ifdef USE_CUDA
+    float *d_x;
+    float *d_xb;
+    float *d_xb2;
+    float *d_hb;
+    float *d_he;
+    float *d_q;
+    float *d_k;
+    float *d_v;
+    float *d_att;
+    float *d_logits;
+
+    float *d_key_cache;
+    float *d_value_cache;
+    #endif
 };
 
 void malloc_run_state(RunState* s, Config* p);
@@ -68,7 +108,7 @@ void free_run_state(RunState* s);
 //  p: Model configuration
 //  layer: Current layer index (0 to n_layers-1)
 //  pos: Current token position index in the sequence
-void attention(float* out, float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
+void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
 
 // Transformer Block (Layer)
 // Parameters:

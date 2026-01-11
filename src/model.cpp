@@ -3,6 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+
+#ifdef USE_CUDA
+#include "kernels.cuh"
+#endif
+
 #include "ops.h"
 
 void malloc_run_state(RunState* s, Config* p) {
@@ -40,6 +45,24 @@ void malloc_run_state(RunState* s, Config* p) {
         printf("Malloc failed! System out of memory?\n");
         exit(1);
     }
+
+    #ifdef USE_CUDA
+    cudaMalloc(&s->d_x, dim * sizeof(float));
+    cudaMalloc(&s->d_xb, dim * sizeof(float));
+    cudaMalloc(&s->d_xb2, dim * sizeof(float));
+    cudaMalloc(&s->d_hb, hidden_dim * sizeof(float));
+    cudaMalloc(&s->d_he, hidden_dim * sizeof(float));
+    cudaMalloc(&s->d_q, dim * sizeof(float));
+    cudaMalloc(&s->d_k, kv_dim * sizeof(float));
+    cudaMalloc(&s->d_v, kv_dim * sizeof(float));
+    cudaMalloc(&s->d_att, p->n_heads * p->seq_len * sizeof(float));
+    cudaMalloc(&s->d_logits, p->vocab_size * sizeof(float));
+
+    cudaMalloc(&s->d_key_cache, kv_cache_size * sizeof(float));
+    cudaMemset(s->d_key_cache, 0, kv_cache_size * sizeof(float));
+    cudaMalloc(&s->d_value_cache, kv_cache_size * sizeof(float));
+    cudaMemset(s->d_value_cache, 0, kv_cache_size * sizeof(float));
+    #endif
 }
 
 void free_run_state(RunState* s) {
@@ -55,75 +78,141 @@ void free_run_state(RunState* s) {
     free(s->logits);
     free(s->key_cache);
     free(s->value_cache);
+
+    #ifdef USE_CUDA
+    cudaFree(s->d_x);
+    cudaFree(s->d_xb);
+    cudaFree(s->d_xb2);
+    cudaFree(s->d_hb);
+    cudaFree(s->d_he);
+    cudaFree(s->d_q);
+    cudaFree(s->d_k);
+    cudaFree(s->d_v);
+    cudaFree(s->d_att);
+    cudaFree(s->d_logits);
+    cudaFree(s->d_key_cache);
+    cudaFree(s->d_value_cache);
+    #endif
 }
 
 
-void attention(float* out, float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
+void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
     int dim = p->dim;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = dim / p->n_heads;
 
     int layer_offset_qkv = layer * dim * dim;
     int layer_offset_kv = layer * kv_dim * dim;
+    int cache_stride = p->seq_len * head_size;
+    int gqa_factor = p->n_heads / p->n_kv_heads;
 
-    // 1. QKV Projections
+#ifdef USE_CUDA
+    // ========== CUDA PATH ==========
+    
+    cuda_gemv(s->d_q, s->d_xb, w->d_wq + layer_offset_qkv, dim, dim);
+    cuda_gemv(s->d_k, s->d_xb, w->d_wk + layer_offset_kv, kv_dim, dim);
+    cuda_gemv(s->d_v, s->d_xb, w->d_wv + layer_offset_kv, kv_dim, dim);
+
+    // RoPE - copy to CPU, apply, copy back (TODO: CUDA RoPE kernel)
+    cudaMemcpy(s->q, s->d_q, dim * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(s->k, s->d_k, kv_dim * sizeof(float), cudaMemcpyDeviceToHost);
+    rope(s->q, s->k, pos, dim, kv_dim, head_size);
+    cudaMemcpy(s->d_q, s->q, dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(s->d_k, s->k, kv_dim * sizeof(float), cudaMemcpyHostToDevice);
+    
+    // KV Cache Update (device to device)
+    for (int h = 0; h < p->n_kv_heads; h++) {
+        int src_offset = h * head_size;
+        int dst_offset = layer * (kv_dim * p->seq_len) + h * cache_stride + pos * head_size;
+        cudaMemcpy(s->d_key_cache + dst_offset, s->d_k + src_offset, 
+                   head_size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(s->d_value_cache + dst_offset, s->d_v + src_offset, 
+                   head_size * sizeof(float), cudaMemcpyDeviceToDevice);
+    }
+
+    // Multi-Head Attention Loop
+    for (int h = 0; h < p->n_heads; h++) {
+        float* d_q_head = s->d_q + h * head_size;
+        int kv_head = h / gqa_factor;
+        int head_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
+        float* d_k_cache_head = s->d_key_cache + head_offset;
+        float* d_v_cache_head = s->d_value_cache + head_offset;
+        float* d_att_head = s->d_att + h * p->seq_len;
+
+        cuda_gemv(d_att_head, d_q_head, d_k_cache_head, pos + 1, head_size);
+
+        // Scale + Softmax on CPU (TODO: CUDA kernels)
+        float* att_head = s->att + h * p->seq_len;
+        cudaMemcpy(att_head, d_att_head, (pos + 1) * sizeof(float), cudaMemcpyDeviceToHost);
+        float scale_factor = 1.0f / sqrtf(head_size);
+        for (int t = 0; t <= pos; t++) att_head[t] *= scale_factor;
+        softmax(att_head, pos + 1);
+        cudaMemcpy(d_att_head, att_head, (pos + 1) * sizeof(float), cudaMemcpyHostToDevice);
+
+        // Weighted sum on CPU (TODO: CUDA attention aggregation kernel)
+        float* xb_head = s->xb + h * head_size;
+        memset(xb_head, 0, head_size * sizeof(float));
+        
+        // Copy V cache slice to CPU value_cache (which is large enough)
+        // Use same offset as we would for reading
+        int v_cache_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
+        cudaMemcpy(s->value_cache + v_cache_offset, d_v_cache_head, 
+                   (pos + 1) * head_size * sizeof(float), cudaMemcpyDeviceToHost);
+        
+        for (int t = 0; t <= pos; t++) {
+            float score = att_head[t];
+            float* v_vec = s->value_cache + v_cache_offset + t * head_size;
+            for (int i = 0; i < head_size; i++) xb_head[i] += v_vec[i] * score;
+        }
+    }
+
+    // Copy aggregated output to device
+    cudaMemcpy(s->d_xb, s->xb, dim * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Output Projection
+    cuda_gemv(s->d_xb2, s->d_xb, w->d_wo + layer_offset_qkv, dim, dim);
+    cudaMemcpy(out, s->d_xb2, dim * sizeof(float), cudaMemcpyDeviceToHost);
+
+#else
+    // ========== CPU PATH ==========
     naive_matmul(s->q, in, w->wq + layer_offset_qkv, dim, dim);
     naive_matmul(s->k, in, w->wk + layer_offset_kv, kv_dim, dim);
     naive_matmul(s->v, in, w->wv + layer_offset_kv, kv_dim, dim);
 
-    // 2. RoPE
     rope(s->q, s->k, pos, dim, kv_dim, head_size);
     
-    // 3. KV Cache Update (Strided)
-    int cache_stride = p->seq_len * head_size; // Size of one head's timeline
     for (int h = 0; h < p->n_kv_heads; h++) {
         int src_offset = h * head_size;
         int dst_offset = layer * (kv_dim * p->seq_len) + h * cache_stride + pos * head_size;
-        
         memcpy(s->key_cache + dst_offset, s->k + src_offset, head_size * sizeof(float));
         memcpy(s->value_cache + dst_offset, s->v + src_offset, head_size * sizeof(float));
     }
 
-    // 4. Multi-Head Attention Loop
-    int gqa_factor = p->n_heads / p->n_kv_heads; // Grouped Query Attention factor
-
     for (int h = 0; h < p->n_heads; h++) {
         float* q_head = s->q + h * head_size;
         int kv_head = h / gqa_factor;
-
         int head_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
         float* k_cache_head = s->key_cache + head_offset;
         float* v_cache_head = s->value_cache + head_offset;
-
-        // Calculate Scores
         float* att_head = s->att + h * p->seq_len;
+
         naive_matmul(att_head, q_head, k_cache_head, pos + 1, head_size);
 
-        // Scale scores
-        float scale = 1.0f / sqrtf(head_size);
-        for (int t = 0; t <= pos; t++) {
-            att_head[t] *= scale;
-        }
-
-        // Softmax
+        float scale_factor = 1.0f / sqrtf(head_size);
+        for (int t = 0; t <= pos; t++) att_head[t] *= scale_factor;
         softmax(att_head, pos + 1);
 
-        // Aggregation: V * Scores
         float* xb_head = s->xb + h * head_size;
         memset(xb_head, 0, head_size * sizeof(float));
-
-        // Weighted sum
         for (int t = 0; t <= pos; t++) {
             float score = att_head[t];
             float* v_vec = v_cache_head + t * head_size;
-            for (int i = 0; i < head_size; i++) {
-                xb_head[i] += v_vec[i] * score;
-            }
+            for (int i = 0; i < head_size; i++) xb_head[i] += v_vec[i] * score;
         }
     }
 
-    // 5. Output Projection
     naive_matmul(out, s->xb, w->wo + layer_offset_qkv, dim, dim);
+#endif
 }
 
 void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
@@ -133,29 +222,46 @@ void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, 
     int layer_offset_ffn = layer * hidden_dim * dim;
     int layer_offset_norm = layer * dim;
 
-    // 1. Attention Block
-    // x -> s->xb (normed) -> s->xb2 (attention output)
+#ifdef USE_CUDA
+    // ========== CUDA PATH ==========
+    cudaMemcpy(s->d_x, x, dim * sizeof(float), cudaMemcpyHostToDevice);
+
+
+    cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_att_weight + layer_offset_norm, dim);
+    attention(s->xb2, s->xb, s, w, p, layer, pos); 
+
+    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+
+    cudaMemcpy(s->d_x, x, dim * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_ffn_weight + layer_offset_norm, dim);
+    cuda_gemv(s->d_hb, s->d_xb, w->d_w1 + layer_offset_ffn, hidden_dim, dim);
+    cuda_gemv(s->d_he, s->d_xb, w->d_w3 + layer_offset_ffn, hidden_dim, dim);   
+    
+    // SwiGLU on CPU (TODO: CUDA SwiGLU kernel)
+    cudaMemcpy(s->hb, s->d_hb, hidden_dim * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(s->he, s->d_he, hidden_dim * sizeof(float), cudaMemcpyDeviceToHost);
+    swiglu(s->hb, s->hb, s->he, hidden_dim);
+    cudaMemcpy(s->d_hb, s->hb, hidden_dim * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_gemv(s->d_xb2, s->d_hb, w->d_w2 + layer_offset_ffn, dim, hidden_dim);
+    
+    cudaMemcpy(s->xb2, s->d_xb2, dim * sizeof(float), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+
+#else
+    // ========== CPU PATH ==========
     RMSNorm(s->xb, x, w->rms_att_weight + layer_offset_norm, dim);
     attention(s->xb2, s->xb, s, w, p, layer, pos);
-
-    for (int i = 0; i < dim; i++) {
-        x[i] += s->xb2[i];
-    }
-
-    // 2. FeedForward Block
-    // x -> s->xb (normed) -> s->xb2 (FFN output)
+    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+    
     RMSNorm(s->xb, x, w->rms_ffn_weight + layer_offset_norm, dim);
-
     naive_matmul(s->hb, s->xb, w->w1 + layer_offset_ffn, hidden_dim, dim);
     naive_matmul(s->he, s->xb, w->w3 + layer_offset_ffn, hidden_dim, dim);   
-
     swiglu(s->hb, s->hb, s->he, hidden_dim);
-
     naive_matmul(s->xb2, s->hb, w->w2 + layer_offset_ffn, dim, hidden_dim);
-
-    for (int i = 0; i < dim; i++) {
-        x[i] += s->xb2[i];
-    }
+    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+#endif
 }
 
 typedef struct {
@@ -252,9 +358,15 @@ int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, f
         transformer_block(s->x, s, w, p, layer, pos);
     }
 
+#ifdef USE_CUDA
+    cudaMemcpy(s->d_x, s->x, dim * sizeof(float), cudaMemcpyHostToDevice);
+    cuda_rmsnorm(s->d_x, s->d_x, w->d_rms_final_weight, dim);
+    cuda_gemv(s->d_logits, s->d_x, w->d_w_cls, p->vocab_size, dim);
+    cudaMemcpy(s->logits, s->d_logits, p->vocab_size * sizeof(float), cudaMemcpyDeviceToHost);
+#else
     RMSNorm(s->x, s->x, w->rms_final_weight, dim);
-
     naive_matmul(s->logits, s->x, w->w_cls, p->vocab_size, dim);
+#endif
     
     return sample(s->logits, p->vocab_size, temperature, topp);
 }

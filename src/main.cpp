@@ -7,6 +7,10 @@
 #include "tensor.h"
 #include "ops.h"
 #include "tokenizer.h"
+#ifdef USE_CUDA
+#include "kernels.cuh"
+#include <cuda_runtime.h>
+#endif
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -76,6 +80,10 @@ int main(int argc, char** argv) {
     printf("Elapsed time: %.2f s\n", elapsed);
     printf("Tokens per second: %.2f tok/s\n", (float)steps / elapsed);
 
+    #ifdef USE_CUDA
+    free_weights_cuda(&weights);
+    #endif
+    free_tokenizer(&tokenizer);
     free_model_file(data, file_size);
     free_run_state(&state);
     printf("\nModel Unloaded. Exiting.\n");

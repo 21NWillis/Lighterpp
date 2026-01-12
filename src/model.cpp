@@ -113,12 +113,8 @@ void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerW
     cuda_gemv(s->d_k, s->d_xb, w->d_wk + layer_offset_kv, kv_dim, dim);
     cuda_gemv(s->d_v, s->d_xb, w->d_wv + layer_offset_kv, kv_dim, dim);
 
-    // RoPE - copy to CPU, apply, copy back (TODO: CUDA RoPE kernel)
-    cudaMemcpy(s->q, s->d_q, dim * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(s->k, s->d_k, kv_dim * sizeof(float), cudaMemcpyDeviceToHost);
-    rope(s->q, s->k, pos, dim, kv_dim, head_size);
-    cudaMemcpy(s->d_q, s->q, dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(s->d_k, s->k, kv_dim * sizeof(float), cudaMemcpyHostToDevice);
+    // RoPE on GPU
+    cuda_rope(s->d_q, s->d_k, pos, dim, kv_dim, head_size);
     
     // KV Cache Update (device to device)
     for (int h = 0; h < p->n_kv_heads; h++) {
@@ -238,11 +234,8 @@ void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, 
     cuda_gemv(s->d_hb, s->d_xb, w->d_w1 + layer_offset_ffn, hidden_dim, dim);
     cuda_gemv(s->d_he, s->d_xb, w->d_w3 + layer_offset_ffn, hidden_dim, dim);   
     
-    // SwiGLU on CPU (TODO: CUDA SwiGLU kernel)
-    cudaMemcpy(s->hb, s->d_hb, hidden_dim * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(s->he, s->d_he, hidden_dim * sizeof(float), cudaMemcpyDeviceToHost);
-    swiglu(s->hb, s->hb, s->he, hidden_dim);
-    cudaMemcpy(s->d_hb, s->hb, hidden_dim * sizeof(float), cudaMemcpyHostToDevice);
+    // SwiGLU on GPU
+    cuda_swiglu(s->d_hb, s->d_hb, s->d_he, hidden_dim);
     
     cuda_gemv(s->d_xb2, s->d_hb, w->d_w2 + layer_offset_ffn, dim, hidden_dim);
     

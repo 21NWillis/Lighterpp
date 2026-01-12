@@ -6,6 +6,11 @@
 #include "tensor.h"
 #include "model.h"
 
+#ifdef USE_CUDA
+#include "kernels.cuh"
+#include <cuda_runtime.h>
+#endif
+
 #define GREEN "\033[0;32m"
 #define RED   "\033[0;31m"
 #define RESET "\033[0m"
@@ -56,6 +61,11 @@ int test_attention_smoke() {
 
 int is_close(float a, float b) {
     return fabsf(a - b) < 1e-4f;
+}
+
+// Relaxed tolerance for CUDA tests (GPU float ops can have slight differences)
+int is_close_gpu(float a, float b) {
+    return fabsf(a - b) < 1e-3f;  // 0.1% tolerance
 }
 
 int test_matmul_square() {
@@ -280,6 +290,242 @@ int test_swiglu() {
     }
 }
 
+// =============================================================================
+// CUDA Tests - Compare CUDA kernel outputs against CPU reference
+// =============================================================================
+#ifdef USE_CUDA
+
+int test_cuda_gemv() {
+    printf("Test: CUDA GEMV... ");
+    
+    const int n = 256;  // output dim
+    const int d = 512;  // input dim (typical model sizes)
+    
+    float* x = (float*)malloc(d * sizeof(float));
+    float* w = (float*)malloc(n * d * sizeof(float));
+    float* out_cpu = (float*)malloc(n * sizeof(float));
+    float* out_gpu = (float*)malloc(n * sizeof(float));
+    
+    // Initialize with simple pattern
+    for (int i = 0; i < d; i++) x[i] = 0.1f * (i % 10);
+    for (int i = 0; i < n * d; i++) w[i] = 0.01f * (i % 100);
+    
+    // CPU reference
+    naive_matmul(out_cpu, x, w, n, d);
+    
+    // GPU version
+    float *d_x, *d_w, *d_out;
+    cudaMalloc(&d_x, d * sizeof(float));
+    cudaMalloc(&d_w, n * d * sizeof(float));
+    cudaMalloc(&d_out, n * sizeof(float));
+    
+    cudaMemcpy(d_x, x, d * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w, w, n * d * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemset(d_out, 0, n * sizeof(float));
+    
+    cuda_gemv(d_out, d_x, d_w, n, d);
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf(RED "FAILED" RESET " (CUDA error: %s)\n", cudaGetErrorString(err));
+        cudaFree(d_x); cudaFree(d_w); cudaFree(d_out);
+        free(x); free(w); free(out_cpu); free(out_gpu);
+        return 1;
+    }
+    
+    cudaMemcpy(out_gpu, d_out, n * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare
+    bool passed = true;
+    float max_diff = 0.0f;
+    int fail_idx = -1;
+    for (int i = 0; i < n; i++) {
+        float diff = fabsf(out_cpu[i] - out_gpu[i]);
+        if (diff > max_diff) {
+            max_diff = diff;
+            fail_idx = i;
+        }
+        if (!is_close_gpu(out_cpu[i], out_gpu[i])) {
+            passed = false;
+        }
+    }
+    
+    cudaFree(d_x); cudaFree(d_w); cudaFree(d_out);
+    
+    if (passed) {
+        free(x); free(w); free(out_cpu); free(out_gpu);
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (max diff=%f at idx=%d: cpu=%f gpu=%f)\n", 
+               max_diff, fail_idx, out_cpu[fail_idx], out_gpu[fail_idx]);
+        free(x); free(w); free(out_cpu); free(out_gpu);
+        return 1;
+    }
+}
+
+int test_cuda_rmsnorm() {
+    printf("Test: CUDA RMSNorm... ");
+    
+    const int n = 256;
+    float* x = (float*)malloc(n * sizeof(float));
+    float* w = (float*)malloc(n * sizeof(float));
+    float* out_cpu = (float*)malloc(n * sizeof(float));
+    float* out_gpu = (float*)malloc(n * sizeof(float));
+    
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.5f + 0.1f * (i % 10);
+        w[i] = 1.0f;
+    }
+    
+    // CPU reference
+    RMSNorm(out_cpu, x, w, n);
+    
+    // GPU version
+    float *d_x, *d_w, *d_out;
+    cudaMalloc(&d_x, n * sizeof(float));
+    cudaMalloc(&d_w, n * sizeof(float));
+    cudaMalloc(&d_out, n * sizeof(float));
+    
+    cudaMemcpy(d_x, x, n * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w, w, n * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_rmsnorm(d_out, d_x, d_w, n);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_out, n * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    bool passed = true;
+    for (int i = 0; i < n; i++) {
+        if (!is_close_gpu(out_cpu[i], out_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    
+    cudaFree(d_x); cudaFree(d_w); cudaFree(d_out);
+    free(x); free(w); free(out_cpu); free(out_gpu);
+    
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (Output mismatch)\n");
+        return 1;
+    }
+}
+
+int test_cuda_rope() {
+    printf("Test: CUDA RoPE... ");
+    
+    const int dim = 128;
+    const int kv_dim = 128;
+    const int head_size = 64;
+    const int pos = 5;
+    
+    float* q_cpu = (float*)malloc(dim * sizeof(float));
+    float* k_cpu = (float*)malloc(kv_dim * sizeof(float));
+    float* q_gpu = (float*)malloc(dim * sizeof(float));
+    float* k_gpu = (float*)malloc(kv_dim * sizeof(float));
+    
+    for (int i = 0; i < dim; i++) q_cpu[i] = q_gpu[i] = 1.0f + 0.1f * i;
+    for (int i = 0; i < kv_dim; i++) k_cpu[i] = k_gpu[i] = 0.5f + 0.1f * i;
+    
+    // CPU reference
+    rope(q_cpu, k_cpu, pos, dim, kv_dim, head_size);
+    
+    // GPU version
+    float *d_q, *d_k;
+    cudaMalloc(&d_q, dim * sizeof(float));
+    cudaMalloc(&d_k, kv_dim * sizeof(float));
+    
+    cudaMemcpy(d_q, q_gpu, dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_k, k_gpu, kv_dim * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_rope(d_q, d_k, pos, dim, kv_dim, head_size);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(q_gpu, d_q, dim * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(k_gpu, d_k, kv_dim * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    bool passed = true;
+    for (int i = 0; i < dim; i++) {
+        if (!is_close_gpu(q_cpu[i], q_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    for (int i = 0; i < kv_dim && passed; i++) {
+        if (!is_close_gpu(k_cpu[i], k_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    
+    cudaFree(d_q); cudaFree(d_k);
+    free(q_cpu); free(k_cpu); free(q_gpu); free(k_gpu);
+    
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (Output mismatch)\n");
+        return 1;
+    }
+}
+
+int test_cuda_swiglu() {
+    printf("Test: CUDA SwiGLU... ");
+    
+    const int size = 256;
+    float* h1 = (float*)malloc(size * sizeof(float));
+    float* h3 = (float*)malloc(size * sizeof(float));
+    float* out_cpu = (float*)malloc(size * sizeof(float));
+    float* out_gpu = (float*)malloc(size * sizeof(float));
+    
+    for (int i = 0; i < size; i++) {
+        h1[i] = -2.0f + 0.02f * i;  // Range from -2 to +3
+        h3[i] = 1.0f + 0.01f * i;
+    }
+    
+    // CPU reference
+    swiglu(out_cpu, h1, h3, size);
+    
+    // GPU version
+    float *d_h1, *d_h3, *d_out;
+    cudaMalloc(&d_h1, size * sizeof(float));
+    cudaMalloc(&d_h3, size * sizeof(float));
+    cudaMalloc(&d_out, size * sizeof(float));
+    
+    cudaMemcpy(d_h1, h1, size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_h3, h3, size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_swiglu(d_out, d_h1, d_h3, size);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_out, size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    bool passed = true;
+    for (int i = 0; i < size; i++) {
+        if (!is_close_gpu(out_cpu[i], out_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    
+    cudaFree(d_h1); cudaFree(d_h3); cudaFree(d_out);
+    free(h1); free(h3); free(out_cpu); free(out_gpu);
+    
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (Output mismatch)\n");
+        return 1;
+    }
+}
+
+#endif // USE_CUDA
+
 int main() {
     printf("--- Lighter++ Unit Tests ---\n");
     int failures = 0;
@@ -288,8 +534,18 @@ int main() {
     failures += test_RMSNorm();
     failures += test_rope();
     failures += test_softmax();
-    failures += test_attention_smoke();
     failures += test_swiglu();
+    
+#ifdef USE_CUDA
+    printf("\n--- CUDA Kernel Tests ---\n");
+    failures += test_cuda_gemv();
+    failures += test_cuda_rmsnorm();
+    failures += test_cuda_rope();
+    failures += test_cuda_swiglu();
+    printf("\n--- Integration Tests ---\n");
+#endif
+
+    failures += test_attention_smoke();
     failures += test_transformer_block_integration();
     
     if (failures == 0) {

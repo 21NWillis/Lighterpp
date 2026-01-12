@@ -20,4 +20,24 @@ void cuda_gemv(float* d_out, float* d_x, float* d_w, int n, int d);
 //   n:   Number of elements
 void cuda_rmsnorm(float* d_out, float* d_x, float* d_w, int n);
 
+// CUDA RoPE (Rotary Position Embedding)
+// Applies rotation to Q and K vectors based on position
+// Parameters:
+//   d_q:       Query vector (size dim), modified in-place
+//   d_k:       Key vector (size kv_dim), modified in-place
+//   pos:       Token position in sequence
+//   dim:       Query dimension
+//   kv_dim:    Key/Value dimension
+//   head_size: Size of each attention head
+void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_size);
+
+// CUDA SwiGLU
+// Computes: hb = SiLU(h1) * h3
+// Parameters:
+//   d_hb: Output vector (size n)
+//   d_h1: Gate input vector (size n)
+//   d_h3: Value input vector (size n)
+//   size: Number of elements
+void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);
+
 #endif

@@ -40,4 +40,12 @@ void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_si
 //   size: Number of elements
 void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);
 
+// CUDA Softmax
+// Computes numerically-stable softmax: out[i] = exp(x[i] - max) / sum(exp(x[j] - max))
+// Parameters:
+//   d_out: Output vector (size n) - probabilities summing to 1
+//   d_x:   Input vector (size n) - logits
+//   n:     Number of elements
+void cuda_softmax(float* d_out, float* d_x, int n);
+
 #endif

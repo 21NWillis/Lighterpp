@@ -524,6 +524,69 @@ int test_cuda_swiglu() {
     }
 }
 
+int test_cuda_softmax() {
+    printf("Test: CUDA Softmax... ");
+    
+    const int size = 256;
+    float* x_cpu = (float*)malloc(size * sizeof(float));
+    float* x_gpu = (float*)malloc(size * sizeof(float));
+    float* out_gpu = (float*)malloc(size * sizeof(float));
+    
+    // Initialize with range of values to test numerical stability
+    for (int i = 0; i < size; i++) {
+        x_cpu[i] = x_gpu[i] = -5.0f + 0.04f * i;  // Range from -5 to +5
+    }
+    
+    // CPU reference (in-place)
+    softmax(x_cpu, size);
+    
+    // GPU version
+    float *d_x, *d_out;
+    cudaMalloc(&d_x, size * sizeof(float));
+    cudaMalloc(&d_out, size * sizeof(float));
+    
+    cudaMemcpy(d_x, x_gpu, size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_softmax(d_out, d_x, size);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_out, size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare
+    bool passed = true;
+    float max_diff = 0.0f;
+    int fail_idx = -1;
+    for (int i = 0; i < size; i++) {
+        float diff = fabsf(x_cpu[i] - out_gpu[i]);
+        if (diff > max_diff) {
+            max_diff = diff;
+            fail_idx = i;
+        }
+        if (!is_close_gpu(x_cpu[i], out_gpu[i])) {
+            passed = false;
+        }
+    }
+    
+    // Also verify sum is ~1.0
+    float sum = 0.0f;
+    for (int i = 0; i < size; i++) sum += out_gpu[i];
+    if (fabsf(sum - 1.0f) > 1e-3f) {
+        passed = false;
+    }
+    
+    cudaFree(d_x); cudaFree(d_out);
+    
+    if (passed) {
+        free(x_cpu); free(x_gpu); free(out_gpu);
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (max diff=%f at idx=%d, sum=%f)\n", max_diff, fail_idx, sum);
+        free(x_cpu); free(x_gpu); free(out_gpu);
+        return 1;
+    }
+}
+
 #endif // USE_CUDA
 
 int main() {
@@ -542,6 +605,7 @@ int main() {
     failures += test_cuda_rmsnorm();
     failures += test_cuda_rope();
     failures += test_cuda_swiglu();
+    failures += test_cuda_softmax();
     printf("\n--- Integration Tests ---\n");
 #endif
 

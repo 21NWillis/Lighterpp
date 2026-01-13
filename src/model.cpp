@@ -137,13 +137,16 @@ void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerW
 
         cuda_gemv(d_att_head, d_q_head, d_k_cache_head, pos + 1, head_size);
 
-        // Scale + Softmax on CPU (TODO: CUDA kernels)
+        // Scale on CPU (TODO: fuse into gemv or softmax)
         float* att_head = s->att + h * p->seq_len;
         cudaMemcpy(att_head, d_att_head, (pos + 1) * sizeof(float), cudaMemcpyDeviceToHost);
         float scale_factor = 1.0f / sqrtf(head_size);
         for (int t = 0; t <= pos; t++) att_head[t] *= scale_factor;
-        softmax(att_head, pos + 1);
         cudaMemcpy(d_att_head, att_head, (pos + 1) * sizeof(float), cudaMemcpyHostToDevice);
+        
+        // Softmax on GPU
+        cuda_softmax(d_att_head, d_att_head, pos + 1);
+        cudaMemcpy(att_head, d_att_head, (pos + 1) * sizeof(float), cudaMemcpyDeviceToHost);
 
         // Weighted sum on CPU (TODO: CUDA attention aggregation kernel)
         float* xb_head = s->xb + h * head_size;

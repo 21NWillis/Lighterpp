@@ -40,6 +40,14 @@ void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_si
 //   size: Number of elements
 void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);
 
+// CUDA Scale
+// Multiplies every element by a scalar: x[i] = x[i] * scale
+// Parameters:
+//   d_x:   Vector to scale in-place
+//   scale: Scalar multiplier
+//   n:     Number of elements
+void cuda_scale(float* d_x, float scale, int n);
+
 // CUDA Softmax
 // Computes numerically-stable softmax: out[i] = exp(x[i] - max) / sum(exp(x[j] - max))
 // Parameters:
@@ -47,5 +55,17 @@ void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);
 //   d_x:   Input vector (size n) - logits
 //   n:     Number of elements
 void cuda_softmax(float* d_out, float* d_x, int n);
+
+// CUDA Aggregation (multi-head) - processes all heads in one launch
+// Parameters:
+//   d_out:      Output [n_heads × head_size] (same as dim)
+//   d_v:        Value cache [n_kv_heads × seq_len × head_size] (with layer offset applied)
+//   d_att:      Attention scores [n_heads × seq_len]
+//   n_heads:    Number of query heads
+//   seq_len:    Number of positions (pos + 1)
+//   head_size:  Dimension per head
+//   gqa_factor: n_heads / n_kv_heads (for grouped query attention)
+//   att_stride: Stride between heads in attention buffer (p->seq_len)
+void cuda_aggregation_multihead(float* d_out, const float* d_v, const float* d_att, int n_heads, int seq_len, int head_size, int gqa_factor, int att_stride);
 
 #endif

@@ -126,47 +126,23 @@ void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerW
                    head_size * sizeof(float), cudaMemcpyDeviceToDevice);
     }
 
-    // Multi-Head Attention Loop
+    // Multi-head attention 
+    float scale_factor = 1.0f / sqrtf(head_size);
     for (int h = 0; h < p->n_heads; h++) {
         float* d_q_head = s->d_q + h * head_size;
         int kv_head = h / gqa_factor;
         int head_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
         float* d_k_cache_head = s->d_key_cache + head_offset;
-        float* d_v_cache_head = s->d_value_cache + head_offset;
         float* d_att_head = s->d_att + h * p->seq_len;
 
         cuda_gemv(d_att_head, d_q_head, d_k_cache_head, pos + 1, head_size);
-
-        // Scale on CPU (TODO: fuse into gemv or softmax)
-        float* att_head = s->att + h * p->seq_len;
-        cudaMemcpy(att_head, d_att_head, (pos + 1) * sizeof(float), cudaMemcpyDeviceToHost);
-        float scale_factor = 1.0f / sqrtf(head_size);
-        for (int t = 0; t <= pos; t++) att_head[t] *= scale_factor;
-        cudaMemcpy(d_att_head, att_head, (pos + 1) * sizeof(float), cudaMemcpyHostToDevice);
-        
-        // Softmax on GPU
+        cuda_scale(d_att_head, scale_factor, pos + 1);
         cuda_softmax(d_att_head, d_att_head, pos + 1);
-        cudaMemcpy(att_head, d_att_head, (pos + 1) * sizeof(float), cudaMemcpyDeviceToHost);
-
-        // Weighted sum on CPU (TODO: CUDA attention aggregation kernel)
-        float* xb_head = s->xb + h * head_size;
-        memset(xb_head, 0, head_size * sizeof(float));
-        
-        // Copy V cache slice to CPU value_cache (which is large enough)
-        // Use same offset as we would for reading
-        int v_cache_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
-        cudaMemcpy(s->value_cache + v_cache_offset, d_v_cache_head, 
-                   (pos + 1) * head_size * sizeof(float), cudaMemcpyDeviceToHost);
-        
-        for (int t = 0; t <= pos; t++) {
-            float score = att_head[t];
-            float* v_vec = s->value_cache + v_cache_offset + t * head_size;
-            for (int i = 0; i < head_size; i++) xb_head[i] += v_vec[i] * score;
-        }
     }
 
-    // Copy aggregated output to device
-    cudaMemcpy(s->d_xb, s->xb, dim * sizeof(float), cudaMemcpyHostToDevice);
+    // Aggregation - ALL HEADS IN ONE KERNEL LAUNCH
+    int layer_v_offset = layer * (kv_dim * p->seq_len);
+    cuda_aggregation_multihead(s->d_xb, s->d_value_cache + layer_v_offset, s->d_att, p->n_heads, pos + 1, head_size, gqa_factor, p->seq_len);
 
     // Output Projection
     cuda_gemv(s->d_xb2, s->d_xb, w->d_wo + layer_offset_qkv, dim, dim);

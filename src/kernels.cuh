@@ -48,6 +48,15 @@ void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);
 //   n:     Number of elements
 void cuda_scale(float* d_x, float scale, int n);
 
+// CUDA Scale (multi-head) - scales all attention heads in one launch
+// Parameters:
+//   d_att:      Attention scores [n_heads × att_stride]
+//   scale:      Scalar multiplier (typically 1/sqrt(head_size))
+//   n_heads:    Number of attention heads
+//   seq_len:    Actual positions to scale (pos + 1)
+//   att_stride: Stride between heads (p->seq_len)
+void cuda_scale_multihead(float* d_att, float scale, int n_heads, int seq_len, int att_stride);
+
 // CUDA Residual Add
 // Computes element-wise addition: out = a + b
 // Parameters:
@@ -64,6 +73,15 @@ void cuda_residual_add(float* d_out, const float* d_a, const float* d_b, int n);
 //   d_x:   Input vector (size n) - logits
 //   n:     Number of elements
 void cuda_softmax(float* d_out, float* d_x, int n);
+
+// CUDA Softmax (multi-head) - softmax all attention heads in one launch
+// Parameters:
+//   d_out:      Output [n_heads × att_stride]
+//   d_x:        Input [n_heads × att_stride]
+//   n_heads:    Number of attention heads
+//   seq_len:    Actual positions to process (pos + 1)
+//   att_stride: Stride between heads (p->seq_len)
+void cuda_softmax_multihead(float* d_out, float* d_x, int n_heads, int seq_len, int att_stride);
 
 // CUDA Aggregation (multi-head) - processes all heads in one launch
 // Parameters:

@@ -127,20 +127,24 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     }
 
     // Multi-head attention 
-    float scale_factor = 1.0f / sqrtf(head_size);
+
     for (int h = 0; h < p->n_heads; h++) {
         float* d_q_head = s->d_q + h * head_size;
         int kv_head = h / gqa_factor;
         int head_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
         float* d_k_cache_head = s->d_key_cache + head_offset;
         float* d_att_head = s->d_att + h * p->seq_len;
-
         cuda_gemv(d_att_head, d_q_head, d_k_cache_head, pos + 1, head_size);
-        cuda_scale(d_att_head, scale_factor, pos + 1);
-        cuda_softmax(d_att_head, d_att_head, pos + 1);
     }
+    
+    // Scale
+    float scale_factor = 1.0f / sqrtf(head_size);
+    cuda_scale_multihead(s->d_att, scale_factor, p->n_heads, pos + 1, p->seq_len);
+    
+    // Softmax 
+    cuda_softmax_multihead(s->d_att, s->d_att, p->n_heads, pos + 1, p->seq_len);
 
-    // Aggregation - ALL HEADS IN ONE KERNEL LAUNCH
+    // Aggregation
     int layer_v_offset = layer * (kv_dim * p->seq_len);
     cuda_aggregation_multihead(s->d_xb, s->d_value_cache + layer_v_offset, s->d_att, p->n_heads, pos + 1, head_size, gqa_factor, p->seq_len);
 

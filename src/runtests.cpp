@@ -521,104 +521,114 @@ int test_cuda_swiglu() {
     }
 }
 
-int test_cuda_softmax() {
-    printf("Test: CUDA Softmax... ");
+
+int test_cuda_softmax_multihead() {
+    printf("Test: CUDA Softmax Multihead... ");
     
-    const int size = 256;
-    float* x_cpu = (float*)malloc(size * sizeof(float));
-    float* x_gpu = (float*)malloc(size * sizeof(float));
-    float* out_gpu = (float*)malloc(size * sizeof(float));
+    const int n_heads = 4;
+    const int seq_len = 32;
+    const int att_stride = 64;
     
-    // Initialize with range of values to test numerical stability
-    for (int i = 0; i < size; i++) {
-        x_cpu[i] = x_gpu[i] = -5.0f + 0.04f * i;  // Range from -5 to +5
+    int total_size = n_heads * att_stride;
+    float* att_cpu = (float*)malloc(total_size * sizeof(float));
+    float* att_gpu = (float*)malloc(total_size * sizeof(float));
+    float* out_gpu = (float*)malloc(total_size * sizeof(float));
+    
+    // Initialize each head with different values
+    for (int h = 0; h < n_heads; h++) {
+        for (int t = 0; t < seq_len; t++) {
+            att_cpu[h * att_stride + t] = -5.0f + 0.3f * t + h;
+            att_gpu[h * att_stride + t] = att_cpu[h * att_stride + t];
+        }
     }
     
-    // CPU reference (in-place)
-    softmax(x_cpu, size);
+    // CPU reference - softmax each head
+    for (int h = 0; h < n_heads; h++) {
+        softmax(att_cpu + h * att_stride, seq_len);
+    }
     
     // GPU version
-    float *d_x, *d_out;
-    cudaMalloc(&d_x, size * sizeof(float));
-    cudaMalloc(&d_out, size * sizeof(float));
+    float *d_att;
+    cudaMalloc(&d_att, total_size * sizeof(float));
+    cudaMemcpy(d_att, att_gpu, total_size * sizeof(float), cudaMemcpyHostToDevice);
     
-    cudaMemcpy(d_x, x_gpu, size * sizeof(float), cudaMemcpyHostToDevice);
-    
-    cuda_softmax(d_out, d_x, size);
+    cuda_softmax_multihead(d_att, d_att, n_heads, seq_len, att_stride);
     cudaDeviceSynchronize();
     
-    cudaMemcpy(out_gpu, d_out, size * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(out_gpu, d_att, total_size * sizeof(float), cudaMemcpyDeviceToHost);
     
-    // Compare
+    // Compare and verify sums
     bool passed = true;
-    float max_diff = 0.0f;
-    int fail_idx = -1;
-    for (int i = 0; i < size; i++) {
-        float diff = fabsf(x_cpu[i] - out_gpu[i]);
-        if (diff > max_diff) {
-            max_diff = diff;
-            fail_idx = i;
+    for (int h = 0; h < n_heads; h++) {
+        float sum = 0.0f;
+        for (int t = 0; t < seq_len; t++) {
+            int idx = h * att_stride + t;
+            if (!is_close_gpu(att_cpu[idx], out_gpu[idx])) {
+                passed = false;
+            }
+            sum += out_gpu[idx];
         }
-        if (!is_close_gpu(x_cpu[i], out_gpu[i])) {
+        if (fabsf(sum - 1.0f) > 1e-3f) {
             passed = false;
         }
     }
     
-    // Also verify sum is ~1.0
-    float sum = 0.0f;
-    for (int i = 0; i < size; i++) sum += out_gpu[i];
-    if (fabsf(sum - 1.0f) > 1e-3f) {
-        passed = false;
-    }
-    
-    cudaFree(d_x); cudaFree(d_out);
+    cudaFree(d_att);
+    free(att_cpu); free(att_gpu); free(out_gpu);
     
     if (passed) {
-        free(x_cpu); free(x_gpu); free(out_gpu);
         printf(GREEN "PASSED" RESET "\n");
         return 0;
     } else {
-        printf(RED "FAILED" RESET " (max diff=%f at idx=%d, sum=%f)\n", max_diff, fail_idx, sum);
-        free(x_cpu); free(x_gpu); free(out_gpu);
+        printf(RED "FAILED" RESET " (Output mismatch or sum != 1)\n");
         return 1;
     }
 }
 
-int test_cuda_scale() {
-    printf("Test: CUDA Scale... ");
+int test_cuda_scale_multihead() {
+    printf("Test: CUDA Scale Multihead... ");
     
-    const int size = 256;
-    float scale = 0.125f;  // 1/sqrt(64)
+    const int n_heads = 4;
+    const int seq_len = 32;
+    const int att_stride = 64;  // Simulating p->seq_len > actual seq_len
+    float scale = 0.125f;
     
-    float* x_cpu = (float*)malloc(size * sizeof(float));
-    float* out_gpu = (float*)malloc(size * sizeof(float));
+    int total_size = n_heads * att_stride;
+    float* att = (float*)malloc(total_size * sizeof(float));
+    float* out_gpu = (float*)malloc(total_size * sizeof(float));
     
-    for (int i = 0; i < size; i++) {
-        x_cpu[i] = 1.0f + 0.1f * i;
-    }
-    
-    // GPU version
-    float *d_x;
-    cudaMalloc(&d_x, size * sizeof(float));
-    cudaMemcpy(d_x, x_cpu, size * sizeof(float), cudaMemcpyHostToDevice);
-    
-    cuda_scale(d_x, scale, size);
-    cudaDeviceSynchronize();
-    
-    cudaMemcpy(out_gpu, d_x, size * sizeof(float), cudaMemcpyDeviceToHost);
-    
-    // Compare against CPU reference (just scale multiply)
-    bool passed = true;
-    for (int i = 0; i < size; i++) {
-        float expected = x_cpu[i] * scale;
-        if (!is_close_gpu(expected, out_gpu[i])) {
-            passed = false;
-            break;
+    // Initialize - only first seq_len elements of each head matter
+    for (int h = 0; h < n_heads; h++) {
+        for (int t = 0; t < att_stride; t++) {
+            att[h * att_stride + t] = 1.0f + 0.1f * t;
         }
     }
     
-    cudaFree(d_x);
-    free(x_cpu); free(out_gpu);
+    // GPU version
+    float *d_att;
+    cudaMalloc(&d_att, total_size * sizeof(float));
+    cudaMemcpy(d_att, att, total_size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_scale_multihead(d_att, scale, n_heads, seq_len, att_stride);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_att, total_size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare - only first seq_len elements should be scaled
+    bool passed = true;
+    for (int h = 0; h < n_heads; h++) {
+        for (int t = 0; t < seq_len; t++) {
+            float expected = att[h * att_stride + t] * scale;
+            if (!is_close_gpu(expected, out_gpu[h * att_stride + t])) {
+                passed = false;
+                break;
+            }
+        }
+        if (!passed) break;
+    }
+    
+    cudaFree(d_att);
+    free(att); free(out_gpu);
     
     if (passed) {
         printf(GREEN "PASSED" RESET "\n");
@@ -771,8 +781,8 @@ int main() {
     failures += test_cuda_rmsnorm();
     failures += test_cuda_rope();
     failures += test_cuda_swiglu();
-    failures += test_cuda_softmax();
-    failures += test_cuda_scale();
+    failures += test_cuda_softmax_multihead();
+    failures += test_cuda_scale_multihead();
     failures += test_cuda_residual_add();
     failures += test_cuda_aggregation();
     printf("\n--- Integration Tests ---\n");

@@ -48,6 +48,15 @@ void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);
 //   n:     Number of elements
 void cuda_scale(float* d_x, float scale, int n);
 
+// CUDA Residual Add
+// Computes element-wise addition: out = a + b
+// Parameters:
+//   d_out: Output vector (can be same as d_a for in-place)
+//   d_a:   First input vector
+//   d_b:   Second input vector
+//   n:     Number of elements
+void cuda_residual_add(float* d_out, const float* d_a, const float* d_b, int n);
+
 // CUDA Softmax
 // Computes numerically-stable softmax: out[i] = exp(x[i] - max) / sum(exp(x[j] - max))
 // Parameters:

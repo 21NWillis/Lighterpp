@@ -108,7 +108,7 @@ void free_run_state(RunState* s);
 //  p: Model configuration
 //  layer: Current layer index (0 to n_layers-1)
 //  pos: Current token position index in the sequence
-void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
+void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos);
 
 // Transformer Block (Layer)
 // Parameters:
@@ -118,7 +118,7 @@ void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerW
 //  p: Config
 //  layer: Layer index
 //  pos: Token position
-void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos);
+void transformer_block(RunState* s, transformerWeights* w, Config* p, int layer, int pos);
 
 // Sample from logits
 // Parameters:

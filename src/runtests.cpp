@@ -45,10 +45,10 @@ int test_attention_smoke() {
     for(int i=0; i<dim; i++) x[i] = 0.5f;
     
     // Run Attention at pos 0
-    attention(s.xb2, s.xb, &s, &w, &config, 0, 0);
+    attention(&s, &w, &config, 0, 0);
     
     // Run Attention at pos 1
-    attention(s.xb2, s.xb, &s, &w, &config, 0, 1);
+    attention(&s, &w, &config, 0, 1);
     
     // Cleanup
     free(w.wq); free(w.wk); free(w.wv); free(w.wo);
@@ -206,28 +206,25 @@ int test_transformer_block_integration() {
     malloc_run_state(&s, &config);
     
     // Setup Input (simple pattern)
-    float* x = (float*)calloc(dim, sizeof(float));
-    for(int i = 0; i < dim; i++) x[i] = 0.1f;
+    for(int i = 0; i < dim; i++) s.x[i] = 0.1f;
     
     // Run transformer block (should not crash)
-    transformer_block(x, &s, &w, &config, 0, 0);
+    transformer_block(&s, &w, &config, 0, 0);
     
     // Verify output is finite (not NaN or Inf)
     bool all_finite = true;
     for (int i = 0; i < dim; i++) {
-        if (!isfinite(x[i])) {
+        if (!isfinite(s.x[i])) {
             all_finite = false;
             break;
         }
     }
     
-    // Cleanup
     free(w.rms_att_weight);
     free(w.wq); free(w.wk); free(w.wv); free(w.wo);
     free(w.rms_ffn_weight);
     free(w.w1); free(w.w2); free(w.w3);
     free_run_state(&s);
-    free(x);
     
     if (all_finite) {
         printf(GREEN "PASSED" RESET "\n");
@@ -587,6 +584,175 @@ int test_cuda_softmax() {
     }
 }
 
+int test_cuda_scale() {
+    printf("Test: CUDA Scale... ");
+    
+    const int size = 256;
+    float scale = 0.125f;  // 1/sqrt(64)
+    
+    float* x_cpu = (float*)malloc(size * sizeof(float));
+    float* out_gpu = (float*)malloc(size * sizeof(float));
+    
+    for (int i = 0; i < size; i++) {
+        x_cpu[i] = 1.0f + 0.1f * i;
+    }
+    
+    // GPU version
+    float *d_x;
+    cudaMalloc(&d_x, size * sizeof(float));
+    cudaMemcpy(d_x, x_cpu, size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_scale(d_x, scale, size);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_x, size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare against CPU reference (just scale multiply)
+    bool passed = true;
+    for (int i = 0; i < size; i++) {
+        float expected = x_cpu[i] * scale;
+        if (!is_close_gpu(expected, out_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    
+    cudaFree(d_x);
+    free(x_cpu); free(out_gpu);
+    
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (Output mismatch)\n");
+        return 1;
+    }
+}
+
+int test_cuda_residual_add() {
+    printf("Test: CUDA Residual Add... ");
+    
+    const int size = 256;
+    float* a = (float*)malloc(size * sizeof(float));
+    float* b = (float*)malloc(size * sizeof(float));
+    float* out_gpu = (float*)malloc(size * sizeof(float));
+    
+    for (int i = 0; i < size; i++) {
+        a[i] = 1.0f + 0.1f * i;
+        b[i] = 0.5f - 0.05f * i;
+    }
+    
+    // GPU version
+    float *d_a, *d_b, *d_out;
+    cudaMalloc(&d_a, size * sizeof(float));
+    cudaMalloc(&d_b, size * sizeof(float));
+    cudaMalloc(&d_out, size * sizeof(float));
+    
+    cudaMemcpy(d_a, a, size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, b, size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_residual_add(d_out, d_a, d_b, size);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_out, size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare against CPU reference
+    bool passed = true;
+    for (int i = 0; i < size; i++) {
+        float expected = a[i] + b[i];
+        if (!is_close_gpu(expected, out_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    
+    cudaFree(d_a); cudaFree(d_b); cudaFree(d_out);
+    free(a); free(b); free(out_gpu);
+    
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (Output mismatch)\n");
+        return 1;
+    }
+}
+
+int test_cuda_aggregation() {
+    printf("Test: CUDA Aggregation Multihead... ");
+    
+    const int n_heads = 4;
+    const int seq_len = 8;
+    const int head_size = 16;
+    const int gqa_factor = 1;
+    const int att_stride = seq_len;
+    
+    int out_size = n_heads * head_size;
+    int v_cache_size = n_heads * seq_len * head_size;
+    int att_size = n_heads * seq_len;
+    
+    float* v_cache = (float*)malloc(v_cache_size * sizeof(float));
+    float* att = (float*)malloc(att_size * sizeof(float));
+    float* out_cpu = (float*)malloc(out_size * sizeof(float));
+    float* out_gpu = (float*)malloc(out_size * sizeof(float));
+    
+    // Initialize with simple patterns
+    for (int i = 0; i < v_cache_size; i++) v_cache[i] = 0.1f * (i % 10);
+    for (int h = 0; h < n_heads; h++) {
+        float sum = 0.0f;
+        for (int t = 0; t < seq_len; t++) {
+            att[h * att_stride + t] = 1.0f / seq_len;  // Uniform attention
+            sum += att[h * att_stride + t];
+        }
+    }
+    
+    // CPU reference
+    for (int h = 0; h < n_heads; h++) {
+        int kv_head = h / gqa_factor;
+        for (int i = 0; i < head_size; i++) {
+            float sum = 0.0f;
+            for (int t = 0; t < seq_len; t++) {
+                sum += v_cache[kv_head * seq_len * head_size + t * head_size + i] * att[h * att_stride + t];
+            }
+            out_cpu[h * head_size + i] = sum;
+        }
+    }
+    
+    // GPU version
+    float *d_v, *d_att, *d_out;
+    cudaMalloc(&d_v, v_cache_size * sizeof(float));
+    cudaMalloc(&d_att, att_size * sizeof(float));
+    cudaMalloc(&d_out, out_size * sizeof(float));
+    
+    cudaMemcpy(d_v, v_cache, v_cache_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_att, att, att_size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    cuda_aggregation_multihead(d_out, d_v, d_att, n_heads, seq_len, head_size, gqa_factor, att_stride);
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(out_gpu, d_out, out_size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare
+    bool passed = true;
+    for (int i = 0; i < out_size; i++) {
+        if (!is_close_gpu(out_cpu[i], out_gpu[i])) {
+            passed = false;
+            break;
+        }
+    }
+    
+    cudaFree(d_v); cudaFree(d_att); cudaFree(d_out);
+    free(v_cache); free(att); free(out_cpu); free(out_gpu);
+    
+    if (passed) {
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (Output mismatch)\n");
+        return 1;
+    }
+}
+
 #endif // USE_CUDA
 
 int main() {
@@ -606,6 +772,9 @@ int main() {
     failures += test_cuda_rope();
     failures += test_cuda_swiglu();
     failures += test_cuda_softmax();
+    failures += test_cuda_scale();
+    failures += test_cuda_residual_add();
+    failures += test_cuda_aggregation();
     printf("\n--- Integration Tests ---\n");
 #endif
 

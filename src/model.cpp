@@ -96,7 +96,7 @@ void free_run_state(RunState* s) {
 }
 
 
-void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
+void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
     int dim = p->dim;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = dim / p->n_heads;
@@ -144,15 +144,14 @@ void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerW
     int layer_v_offset = layer * (kv_dim * p->seq_len);
     cuda_aggregation_multihead(s->d_xb, s->d_value_cache + layer_v_offset, s->d_att, p->n_heads, pos + 1, head_size, gqa_factor, p->seq_len);
 
-    // Output Projection
+    // Output Projection (result stays in d_xb2 on device)
     cuda_gemv(s->d_xb2, s->d_xb, w->d_wo + layer_offset_qkv, dim, dim);
-    cudaMemcpy(out, s->d_xb2, dim * sizeof(float), cudaMemcpyDeviceToHost);
 
 #else
     // ========== CPU PATH ==========
-    naive_matmul(s->q, in, w->wq + layer_offset_qkv, dim, dim);
-    naive_matmul(s->k, in, w->wk + layer_offset_kv, kv_dim, dim);
-    naive_matmul(s->v, in, w->wv + layer_offset_kv, kv_dim, dim);
+    naive_matmul(s->q, s->xb, w->wq + layer_offset_qkv, dim, dim);
+    naive_matmul(s->k, s->xb, w->wk + layer_offset_kv, kv_dim, dim);
+    naive_matmul(s->v, s->xb, w->wv + layer_offset_kv, kv_dim, dim);
 
     rope(s->q, s->k, pos, dim, kv_dim, head_size);
     
@@ -186,11 +185,11 @@ void attention(float* out, [[maybe_unused]] float* in, RunState* s, transformerW
         }
     }
 
-    naive_matmul(out, s->xb, w->wo + layer_offset_qkv, dim, dim);
+    naive_matmul(s->xb2, s->xb, w->wo + layer_offset_qkv, dim, dim);
 #endif
 }
 
-void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
+void transformer_block(RunState* s, transformerWeights* w, Config* p, int layer, int pos) {
     int dim = p->dim;
     int hidden_dim = p->hidden_dim;
 
@@ -199,40 +198,34 @@ void transformer_block(float* x, RunState* s, transformerWeights* w, Config* p, 
 
 #ifdef USE_CUDA
     // ========== CUDA PATH ==========
-    cudaMemcpy(s->d_x, x, dim * sizeof(float), cudaMemcpyHostToDevice);
-
-
-    cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_att_weight + layer_offset_norm, dim);
-    attention(s->xb2, s->xb, s, w, p, layer, pos); 
-
-    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
-
-    cudaMemcpy(s->d_x, x, dim * sizeof(float), cudaMemcpyHostToDevice);
+    // NOTE: Caller must copy x to d_x before first layer!
+    // All operations stay on device, x is not used.
     
+    // Attention block: d_x = d_x + attention(RMSNorm(d_x))
+    cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_att_weight + layer_offset_norm, dim);
+    attention(s, w, p, layer, pos);  // Result in d_xb2
+    cuda_residual_add(s->d_x, s->d_x, s->d_xb2, dim);
+    
+    // FFN block: d_x = d_x + FFN(RMSNorm(d_x))
     cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_ffn_weight + layer_offset_norm, dim);
     cuda_gemv(s->d_hb, s->d_xb, w->d_w1 + layer_offset_ffn, hidden_dim, dim);
     cuda_gemv(s->d_he, s->d_xb, w->d_w3 + layer_offset_ffn, hidden_dim, dim);   
-    
-    // SwiGLU on GPU
     cuda_swiglu(s->d_hb, s->d_hb, s->d_he, hidden_dim);
-    
     cuda_gemv(s->d_xb2, s->d_hb, w->d_w2 + layer_offset_ffn, dim, hidden_dim);
-    
-    cudaMemcpy(s->xb2, s->d_xb2, dim * sizeof(float), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+    cuda_residual_add(s->d_x, s->d_x, s->d_xb2, dim);
 
 #else
     // ========== CPU PATH ==========
-    RMSNorm(s->xb, x, w->rms_att_weight + layer_offset_norm, dim);
-    attention(s->xb2, s->xb, s, w, p, layer, pos);
-    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+    RMSNorm(s->xb, s->x, w->rms_att_weight + layer_offset_norm, dim);
+    attention(s, w, p, layer, pos);
+    for (int i = 0; i < dim; i++) s->x[i] += s->xb2[i];
     
-    RMSNorm(s->xb, x, w->rms_ffn_weight + layer_offset_norm, dim);
+    RMSNorm(s->xb, s->x, w->rms_ffn_weight + layer_offset_norm, dim);
     naive_matmul(s->hb, s->xb, w->w1 + layer_offset_ffn, hidden_dim, dim);
     naive_matmul(s->he, s->xb, w->w3 + layer_offset_ffn, hidden_dim, dim);   
     swiglu(s->hb, s->hb, s->he, hidden_dim);
     naive_matmul(s->xb2, s->hb, w->w2 + layer_offset_ffn, dim, hidden_dim);
-    for (int i = 0; i < dim; i++) x[i] += s->xb2[i];
+    for (int i = 0; i < dim; i++) s->x[i] += s->xb2[i];
 #endif
 }
 
@@ -324,18 +317,29 @@ int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, f
     int dim = p->dim;
     
     float* content_row = w->token_embedding_table + token * dim;
-    memcpy(s->x, content_row, dim * sizeof(float));
-
-    for (int layer = 0; layer < p->n_layers; layer++) {
-        transformer_block(s->x, s, w, p, layer, pos);
-    }
 
 #ifdef USE_CUDA
-    cudaMemcpy(s->d_x, s->x, dim * sizeof(float), cudaMemcpyHostToDevice);
+    // Copy embedding to GPU ONCE at the start
+    cudaMemcpy(s->d_x, content_row, dim * sizeof(float), cudaMemcpyHostToDevice);
+    
+    // All transformer blocks run entirely on GPU
+    for (int layer = 0; layer < p->n_layers; layer++) {
+        transformer_block(s, w, p, layer, pos);
+    }
+    
+    // Final norm and classifier 
     cuda_rmsnorm(s->d_x, s->d_x, w->d_rms_final_weight, dim);
     cuda_gemv(s->d_logits, s->d_x, w->d_w_cls, p->vocab_size, dim);
+    
+    // Copy logits back to CPU ONCE at the end
     cudaMemcpy(s->logits, s->d_logits, p->vocab_size * sizeof(float), cudaMemcpyDeviceToHost);
 #else
+    memcpy(s->x, content_row, dim * sizeof(float));
+    
+    for (int layer = 0; layer < p->n_layers; layer++) {
+        transformer_block(s, w, p, layer, pos);
+    }
+    
     RMSNorm(s->x, s->x, w->rms_final_weight, dim);
     naive_matmul(s->logits, s->x, w->w_cls, p->vocab_size, dim);
 #endif

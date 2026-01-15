@@ -35,7 +35,7 @@ The entire transformer forward pass now runs on the GPU. The attention mechanism
 ## Key Architectural Decisions
 
 ### Memory Management
-*   **Standard Library Only (CPU):** Built with zero external dependencies to ensure a "from-scratch" understanding of the math and memory management.
+*   **Standard Library Only:** Built with zero external dependencies to ensure a "from-scratch" understanding of the math and memory management.
 *   **Memory Mapped Loading (`mmap`):** Model weights are mapped directly into the process's virtual address space. This "zero-copy" implementation uses lazy loading to only load weights as needed.
 *   **GPU-Resident Data Flow:** After loading, weights are copied to GPU memory once at startup. During inference, data stays on the GPU—eliminating per-token CPU↔GPU transfers that would otherwise bottleneck performance.
 

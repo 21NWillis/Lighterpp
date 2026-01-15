@@ -68,7 +68,11 @@ int main(int argc, char** argv) {
     for (int pos = 0; pos < steps; pos++) {
         token = forward(token, pos, &state, &weights, &config, temperature, topp);
         char* token_str = decode_token(&tokenizer, token);
-        printf("%s", token_str);
+        if (strcmp(token_str, "<0x0A>") == 0) {
+            printf("\n");
+        } else {
+            printf("%s", token_str);
+        }
         fflush(stdout);
     }
     

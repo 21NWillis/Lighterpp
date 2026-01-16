@@ -75,7 +75,12 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
 *   **Cause:** CPU code paths still referenced the removed parameters.
 *   **Fix:** Updated CPU paths to use `s->xb` directly instead of function parameters.
 
-**Lesson Learned:** Comprehensive unit tests are necessary to catch silent failures. Integration tests comparing GPU vs CPU output helped isolate kernel-level bugs.
+#### 5. GGUF Integration Issues
+*   **Shared Memory Overflow:**
+    *   **Cause:** Hardcoded 4096 float buffer in `gemv_kernel` overflowed with larger models (5632 dim), causing silent corruption.
+    *   **Fix:** Increased buffer to 40KB (10240 floats) and added runtime safety check.
+
+**Lessons Learned:** Comprehensive unit tests are necessary to catch silent failures. Integration tests comparing GPU vs CPU output helped isolate kernel-level bugs. Error out when memory is out of bounds so it doesn't silently fail.
 
 
 ## Technical Stack

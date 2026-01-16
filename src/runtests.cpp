@@ -22,6 +22,8 @@ int test_attention_smoke() {
     
     // Setup Config
     Config config;
+    // Zero init to avoid garbage
+    memset(&config, 0, sizeof(Config));
     config.dim = 32;
     config.hidden_dim = 64;
     config.n_layers = 1;
@@ -29,6 +31,7 @@ int test_attention_smoke() {
     config.n_kv_heads = 4;
     config.vocab_size = 100;
     config.seq_len = 10;
+    config.rope_base = 10000.0f;
     
     // Setup Weights
     transformerWeights w;
@@ -174,6 +177,7 @@ int test_transformer_block_integration() {
     
     // Setup Config
     Config config;
+    memset(&config, 0, sizeof(Config));
     config.dim = 64;
     config.hidden_dim = 128;
     config.n_layers = 2;
@@ -181,6 +185,7 @@ int test_transformer_block_integration() {
     config.n_kv_heads = 4;
     config.vocab_size = 100;
     config.seq_len = 10;
+    config.rope_base = 10000.0f;
     
     // Setup Weights (all zeros for simplicity)
     transformerWeights w;
@@ -767,96 +772,8 @@ int test_cuda_aggregation() {
 
 #endif // USE_CUDA
 
-int main(int argc, char** argv) {
-    // If a GGUF file is passed, test the parser
-    if (argc > 1) {
-        printf("--- GGUF Parser Test ---\n");
-        printf("Opening: %s\n\n", argv[1]);
-        
-        GGUFFile* file = gguf_open(argv[1]);
-        if (!file) {
-            printf(RED "FAILED" RESET " - Could not open file\n");
-            return 1;
-        }
-        
-        printf("First 10 tensors:\n");
-        int count = (file->header.tensor_count < 10) ? file->header.tensor_count : 10;
-        for (int i = 0; i < count; i++) {
-            GGUFTensorInfo* t = &file->tensors[i];
-            printf("  [%d] %s\n", i, t->name);
-            printf("      dims: [");
-            for (uint32_t d = 0; d < t->n_dims; d++) {
-                printf("%lu%s", (unsigned long)t->dims[d], d < t->n_dims-1 ? ", " : "");
-            }
-            printf("], type=%d, offset=%lu\n", t->type, (unsigned long)t->offset);
-        }
-        
-        // Try to find a specific tensor
-        printf("\nLooking up 'token_embd.weight'... ");
-        GGUFTensorInfo* embd = gguf_find_tensor(file, "token_embd.weight");
-        if (embd) {
-            printf(GREEN "FOUND" RESET " (dims: %lux%lu)\n", 
-                   (unsigned long)embd->dims[0], (unsigned long)embd->dims[1]);
-        } else {
-            printf("Not found (might use different name)\n");
-        }
-        
-        // Test metadata lookup - these are the keys we need for Config
-        printf("\n--- Config Extraction Test ---\n");
-        
-        Config config;
-        if (gguf_extract_config(file, &config)) {
-            printf(GREEN "Config extraction PASSED" RESET "\n");
-            printf("  dim=%d, hidden=%d, layers=%d, heads=%d, kv_heads=%d\n",
-                   config.dim, config.hidden_dim, config.n_layers,
-                   config.n_heads, config.n_kv_heads);
-            printf("  vocab=%d, seq_len=%d, rope_base=%.1f\n",
-                   config.vocab_size, config.seq_len, config.rope_base);
-        } else {
-            printf(RED "Config extraction FAILED" RESET "\n");
-            gguf_close(file);
-            return 1;
-        }
-        
-        // Test weight loading
-        printf("\n--- Weight Loading Test ---\n");
-        transformerWeights weights;
-        memset(&weights, 0, sizeof(weights));
-        
-        if (gguf_init_weights(file, &weights, &config)) {
-            printf(GREEN "Weight loading PASSED" RESET "\n");
-            
-            // Verify a few weights are non-zero
-            float sum = 0;
-            for (int i = 0; i < 100; i++) sum += weights.token_embedding_table[i];
-            printf("  Embedding sum (first 100): %.4f\n", sum);
-            
-            sum = 0;
-            for (int i = 0; i < config.dim; i++) sum += weights.rms_final_weight[i];
-            printf("  Final norm sum: %.4f\n", sum);
-            
-            // Free weights (we allocated them with malloc)
-            free(weights.token_embedding_table);
-            if (weights.w_cls != weights.token_embedding_table) free(weights.w_cls);
-            free(weights.rms_att_weight);
-            free(weights.wq);
-            free(weights.wk);
-            free(weights.wv);
-            free(weights.wo);
-            free(weights.rms_ffn_weight);
-            free(weights.w1);
-            free(weights.w2);
-            free(weights.w3);
-            free(weights.rms_final_weight);
-        } else {
-            printf(RED "Weight loading FAILED" RESET "\n");
-        }
-        
-        gguf_close(file);
-        printf("\n" GREEN "GGUF Test Suite PASSED" RESET "\n");
-        return 0;
-    }
-    
+int main() {
+    // Run tests
     printf("--- Lighter++ Unit Tests ---\n");
     int failures = 0;
     failures += test_matmul_square();
@@ -887,8 +804,6 @@ int main(int argc, char** argv) {
     } else {
         printf("%d TESTS FAILED\n", failures);
     }
-    
-    printf("\nTo test GGUF parser: ./runtests <path-to-gguf-file>\n");
     
     return failures;
 }

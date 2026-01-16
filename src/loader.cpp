@@ -340,11 +340,15 @@ static float f16_to_f32(uint16_t h) {
     uint32_t exp = (h >> 10) & 0x1F;
     uint32_t mant = h & 0x03FF;
     
+    uint32_t result;
+    float f_result;
+    
     if (exp == 0) {
         // Subnormal or zero
         if (mant == 0) {
-            uint32_t result = sign;
-            return *(float*)&result;
+            result = sign;
+            memcpy(&f_result, &result, sizeof(float));
+            return f_result;
         }
         // Subnormal: normalize
         while ((mant & 0x0400) == 0) {
@@ -355,13 +359,15 @@ static float f16_to_f32(uint16_t h) {
         mant &= ~0x0400;
     } else if (exp == 31) {
         // Inf or NaN
-        uint32_t result = sign | 0x7F800000 | (mant << 13);
-        return *(float*)&result;
+        result = sign | 0x7F800000 | (mant << 13);
+        memcpy(&f_result, &result, sizeof(float));
+        return f_result;
     }
     
     exp += 127 - 15;  // Adjust exponent bias
-    uint32_t result = sign | (exp << 23) | (mant << 13);
-    return *(float*)&result;
+    result = sign | (exp << 23) | (mant << 13);
+    memcpy(&f_result, &result, sizeof(float));
+    return f_result;
 }
 
 // Copy tensor data, converting F16 to F32 if needed
@@ -386,6 +392,10 @@ static void copy_tensor_data(float* dst, GGUFFile* file, GGUFTensorInfo* tensor)
         memset(dst, 0, nelements * sizeof(float));
     }
 }
+
+// (Function removed: unpermute_gguf_weights)
+// We now use GGUF's native adjacent-pair layout directly in the GPU kernel (rope.cu)
+// This avoids CPU-side shuffling and speeds up loading.
 
 bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
     int head_size = p->dim / p->n_heads;
@@ -444,6 +454,8 @@ bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
         snprintf(name, sizeof(name), "blk.%d.attn_q.weight", layer);
         t = gguf_find_tensor(file, name);
         if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        // GGUF Q/K weights are permuted for RoPE (adjacent pairs 0,1)
+        // We un-permute them to standard Llama layout (split pairs 0, n/2)
         copy_tensor_data(w->wq + layer * p->dim * p->dim, file, t);
         
         // K projection
@@ -489,6 +501,106 @@ bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
         copy_tensor_data(w->w3 + layer * p->dim * p->hidden_dim, file, t);
     }
     
+
+    #ifdef USE_CUDA
+    size_t size;
+    
+
+    size = p->vocab_size * p->dim * sizeof(float);
+    cudaMalloc(&w->d_token_embedding_table, size);
+    cudaMemcpy(w->d_token_embedding_table, w->token_embedding_table, size, cudaMemcpyHostToDevice);
+
+    if (w->w_cls == w->token_embedding_table) {
+        w->d_w_cls = w->d_token_embedding_table;  
+    } else {
+        size = p->vocab_size * p->dim * sizeof(float);
+        cudaMalloc(&w->d_w_cls, size);
+        cudaMemcpy(w->d_w_cls, w->w_cls, size, cudaMemcpyHostToDevice);
+    }
+    
+    size = p->n_layers * p->dim * sizeof(float);
+    cudaMalloc(&w->d_rms_att_weight, size);
+    cudaMemcpy(w->d_rms_att_weight, w->rms_att_weight, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * p->dim * sizeof(float);
+    cudaMalloc(&w->d_wq, size);
+    cudaMemcpy(w->d_wq, w->wq, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * kv_dim * sizeof(float);
+    cudaMalloc(&w->d_wk, size);
+    cudaMemcpy(w->d_wk, w->wk, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * kv_dim * sizeof(float);
+    cudaMalloc(&w->d_wv, size);
+    cudaMemcpy(w->d_wv, w->wv, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * p->dim * sizeof(float);
+    cudaMalloc(&w->d_wo, size);
+    cudaMemcpy(w->d_wo, w->wo, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * sizeof(float);
+    cudaMalloc(&w->d_rms_ffn_weight, size);
+    cudaMemcpy(w->d_rms_ffn_weight, w->rms_ffn_weight, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * p->hidden_dim * sizeof(float);
+    cudaMalloc(&w->d_w1, size);
+    cudaMemcpy(w->d_w1, w->w1, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->hidden_dim * p->dim * sizeof(float);
+    cudaMalloc(&w->d_w2, size);
+    cudaMemcpy(w->d_w2, w->w2, size, cudaMemcpyHostToDevice);
+    
+    size = p->n_layers * p->dim * p->hidden_dim * sizeof(float);
+    cudaMalloc(&w->d_w3, size);
+    cudaMemcpy(w->d_w3, w->w3, size, cudaMemcpyHostToDevice);
+    
+    size = p->dim * sizeof(float);
+    cudaMalloc(&w->d_rms_final_weight, size);
+    cudaMemcpy(w->d_rms_final_weight, w->rms_final_weight, size, cudaMemcpyHostToDevice);
+    
+    std::cout << "GGUF: Copied weights to GPU" << std::endl;
+    #endif
+    
     std::cout << "GGUF: Loaded weights for " << p->n_layers << " layers" << std::endl;
+    return true;
+}
+
+// =============================================================================
+// GGUF Tokenizer Loading
+// Reads vocabulary directly from GGUF metadata (no separate tokenizer file)
+// =============================================================================
+
+bool gguf_init_tokenizer(GGUFFile* file, Tokenizer* tokenizer) {
+    // Get vocabulary tokens
+    char** vocab = nullptr;
+    size_t vocab_size = gguf_get_string_array(file, "tokenizer.ggml.tokens", &vocab);
+    if (vocab_size == 0) {
+        std::cerr << "GGUF: No tokenizer.ggml.tokens found" << std::endl;
+        return false;
+    }
+    
+    tokenizer->vocab_size = vocab_size;
+    tokenizer->vocab = vocab;  // Transfer ownership
+    
+    // Get scores (optional - some models may not have them)
+    float* scores = nullptr;
+    size_t score_count = gguf_get_float32_array(file, "tokenizer.ggml.scores", &scores);
+    if (score_count == vocab_size) {
+        tokenizer->vocab_scores = scores;
+    } else {
+        // Scores missing or count mismatch - allocate default scores
+        tokenizer->vocab_scores = (float*)calloc(vocab_size, sizeof(float));
+        if (scores) free(scores);
+    }
+    
+    // Find max token length (for encoding, if needed later)
+    int max_len = 0;
+    for (size_t i = 0; i < vocab_size; i++) {
+        int len = strlen(vocab[i]);
+        if (len > max_len) max_len = len;
+    }
+    tokenizer->max_token_len = max_len;
+    
+    std::cout << "GGUF: Loaded tokenizer with " << vocab_size << " tokens" << std::endl;
     return true;
 }

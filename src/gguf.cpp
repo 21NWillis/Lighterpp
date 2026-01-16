@@ -387,3 +387,25 @@ size_t gguf_get_string_array(GGUFFile* file, const char* key, char*** out) {
     
     return (size_t)count;
 }
+
+size_t gguf_get_float32_array(GGUFFile* file, const char* key, float** out) {
+    GGUFMetadataEntry* entry = find_metadata(file, key);
+    if (!entry || entry->type != GGUF_TYPE_ARRAY) return 0;
+    
+    const uint8_t* ptr = (uint8_t*)file->mmap_addr + entry->value_offset;
+    
+    uint32_t elem_type;
+    memcpy(&elem_type, ptr, sizeof(uint32_t));
+    ptr += sizeof(uint32_t);
+    
+    if (elem_type != GGUF_TYPE_FLOAT32) return 0;
+    
+    uint64_t count;
+    memcpy(&count, ptr, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+    
+    *out = (float*)malloc(count * sizeof(float));
+    memcpy(*out, ptr, count * sizeof(float));
+    
+    return (size_t)count;
+}

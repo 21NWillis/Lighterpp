@@ -91,7 +91,7 @@ bool gguf_get_uint64(GGUFFile* file, const char* key, uint64_t* out);
 bool gguf_get_float32(GGUFFile* file, const char* key, float* out);
 bool gguf_get_string(GGUFFile* file, const char* key, char** out);
 
-
 size_t gguf_get_string_array(GGUFFile* file, const char* key, char*** out);
+size_t gguf_get_float32_array(GGUFFile* file, const char* key, float** out);
 
 #endif // GGUF_H

@@ -60,17 +60,22 @@ int main(int argc, char** argv) {
             return 1;
         }
         
-        // TODO: Load tokenizer from GGUF metadata
-        // For now, require external tokenizer if specified
-        if (argc >= 3 && strcmp(argv[2], "-") != 0) {
-            printf("Loading tokenizer: %s\n", argv[2]);
-            load_tokenizer(&tokenizer, argv[2], config.vocab_size);
-            if (argc >= 4) temperature = (float)atof(argv[3]);
-        } else {
-            printf("Warning: No tokenizer specified, output will be token IDs\n");
+        // Load tokenizer from GGUF (embedded vocabulary)
+        if (!gguf_init_tokenizer(gguf, &tokenizer)) {
+            printf("Warning: Could not load tokenizer from GGUF, output will be token IDs\n");
             tokenizer.vocab = nullptr;
             tokenizer.vocab_size = config.vocab_size;
         }
+        
+        // Optional: external tokenizer override
+        if (argc >= 3 && strcmp(argv[2], "-") != 0) {
+            // Free GGUF tokenizer if loaded, use external instead
+            if (tokenizer.vocab) free_tokenizer(&tokenizer);
+            printf("Loading external tokenizer: %s\n", argv[2]);
+            load_tokenizer(&tokenizer, argv[2], config.vocab_size);
+        }
+        
+        if (argc >= 4) temperature = (float)atof(argv[3]);
         
     } else {
         // ===================== llama2.c BIN PATH =====================
@@ -106,6 +111,14 @@ int main(int argc, char** argv) {
     printf("Seq Len: %d\n", config.seq_len);
     printf("RoPE Base: %.0f\n", config.rope_base);
     printf("Temperature: %.2f\n", temperature);
+    
+    #ifdef USE_CUDA
+    if (config.hidden_dim > MAX_SHARED_FLOATS) {
+        printf("\nError: Model hidden_dim (%d) exceeds CUDA kernel shared memory limit (%d)\n", config.hidden_dim, MAX_SHARED_FLOATS);
+        printf("Solution: Increase MAX_SHARED_FLOATS in kernels.cuh and recompile.\n");
+        return 1;
+    }
+    #endif
     
     printf("\n--- Running Inference ---\n");
     

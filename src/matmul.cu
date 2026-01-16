@@ -5,7 +5,8 @@
 
 __global__ void gemv_kernel(float* out, float* x, float* w, int n, int d) {
     __shared__ float warp_sums[32];
-    __shared__ float x_shared[4096];
+    // Use defined limit (40KB=10240 floats)
+    __shared__ float x_shared[MAX_SHARED_FLOATS];
     
     int row = blockIdx.x;
     int tid = threadIdx.x;

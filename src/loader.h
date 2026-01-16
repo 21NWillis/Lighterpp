@@ -19,6 +19,10 @@ bool is_gguf_file(const char* path);
 bool gguf_extract_config(GGUFFile* file, Config* config);
 bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p);
 
+// GGUF tokenizer loading
+#include "tokenizer.h"
+bool gguf_init_tokenizer(GGUFFile* file, Tokenizer* tokenizer);
+
 #ifdef USE_CUDA
 void free_weights_cuda(transformerWeights* w);
 #endif

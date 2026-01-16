@@ -141,7 +141,10 @@ int sample(float* logits, int vocab_size, float temperature, float topp);
 //  temperature: Sampling temperature
 //  topp: Top-p threshold
 // Returns:
-//  Next token index
-int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, float temperature, float topp);
+//  Next token
+// penalty: scale factor for repetition penalty (1.0 = no penalty, > 1.0 = penalize)
+// history: array of recent token IDs to penalize
+// history_len: number of tokens in history array
+int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, float temperature, float topp, float penalty, int* history, int history_len);
 
 #endif

@@ -111,7 +111,6 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
 
     int layer_offset_qkv = layer * dim * dim;
     int layer_offset_kv = layer * kv_dim * dim;
-    int cache_stride = p->seq_len * head_size;
     int gqa_factor = p->n_heads / p->n_kv_heads;
 
 #ifdef USE_CUDA
@@ -125,19 +124,12 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     cuda_rope(s->d_q, s->d_k, pos, dim, kv_dim, head_size, p->rope_base);
     
     // KV Cache Update - single kernel replaces per-head cudaMemcpy loop
-    cuda_scatter_kv(s->d_key_cache, s->d_value_cache, s->d_k, s->d_v,
-                    layer, pos, p->n_kv_heads, head_size, p->seq_len);
+    cuda_scatter_kv(s->d_key_cache, s->d_value_cache, s->d_k, s->d_v, layer, pos, p->n_kv_heads, head_size, p->seq_len);
+
+
 
     // Multi-head attention 
-
-    for (int h = 0; h < p->n_heads; h++) {
-        float* d_q_head = s->d_q + h * head_size;
-        int kv_head = h / gqa_factor;
-        int head_offset = layer * (kv_dim * p->seq_len) + kv_head * cache_stride;
-        float* d_k_cache_head = s->d_key_cache + head_offset;
-        float* d_att_head = s->d_att + h * p->seq_len;
-        cuda_gemv(d_att_head, d_q_head, d_k_cache_head, pos + 1, head_size);
-    }
+    cuda_multihead_gemv(s->d_att, s->d_q, s->d_key_cache, layer, pos, p->n_heads, p->n_kv_heads, head_size, p->seq_len);
     
     // Scale
     float scale_factor = 1.0f / sqrtf(head_size);
@@ -204,8 +196,6 @@ void transformer_block(RunState* s, transformerWeights* w, Config* p, int layer,
 
 #ifdef USE_CUDA
     // ========== CUDA PATH ==========
-    // NOTE: Caller must copy x to d_x before first layer!
-    // All operations stay on device, x is not used.
     
     // Attention block: d_x = d_x + attention(RMSNorm(d_x))
     cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_att_weight + layer_offset_norm, dim);
@@ -248,7 +238,23 @@ int compare_prob(const void* a, const void* b) {
     return 0;
 }
 
-int sample(float* logits, int vocab_size, float temperature, float topp) {
+int sample(float* logits, int vocab_size, float temperature, float topp, 
+           float penalty, int* history, int history_len) {
+    
+    // Apply repetition penalty
+    if (penalty > 1.0f && history && history_len > 0) {
+        for (int i = 0; i < history_len; i++) {
+            int token = history[i];
+            if (token >= 0 && token < vocab_size) {
+                 if (logits[token] > 0) {
+                     logits[token] /= penalty;
+                 } else {
+                     logits[token] *= penalty;
+                 }
+            }
+        }
+    }
+
     if (temperature == 0.0f) {
         // Argmax
         int max_idx = 0;
@@ -319,7 +325,7 @@ int sample(float* logits, int vocab_size, float temperature, float topp) {
     }
 }
 
-int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, float temperature, float topp) {
+int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, float temperature, float topp, float penalty, int* history, int history_len) {
     int dim = p->dim;
     
     float* content_row = w->token_embedding_table + token * dim;
@@ -350,5 +356,5 @@ int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, f
     naive_matmul(s->logits, s->x, w->w_cls, p->vocab_size, dim);
 #endif
     
-    return sample(s->logits, p->vocab_size, temperature, topp);
+    return sample(s->logits, p->vocab_size, temperature, topp, penalty, history, history_len);
 }

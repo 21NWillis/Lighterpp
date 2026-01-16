@@ -2,6 +2,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <string>
+#include <vector>
+#include <map>
+#include <algorithm>
+
+// Internal C++ helper for fast lookup
+struct TokenizerInternals {
+    std::map<std::string, int> params;
+};
 
 void load_tokenizer(Tokenizer* tokenizer, const char* path, int vocab_size) {
     FILE* file = fopen(path, "rb");
@@ -93,10 +103,109 @@ char* decode_token(Tokenizer* tokenizer, int token_id) {
     return decoded_buffer;
 }
 
-void free_tokenizer(Tokenizer* tokenizer) {
-    for (int i = 0; i < tokenizer->vocab_size; i++) {
-        free(tokenizer->vocab[i]);
+// =============================================================================
+// ENCODING
+// =============================================================================
+
+static std::map<std::string, int> token_map;
+static bool map_initialized = false;
+
+static void build_token_map(Tokenizer* t) {
+    if (map_initialized) return;
+    
+    for (int i = 0; i < t->vocab_size; ++i) {
+        token_map[t->vocab[i]] = i;
     }
-    free(tokenizer->vocab);
-    free(tokenizer->vocab_scores);
+    map_initialized = true;
+    printf("Tokenizer: Built lookup map for %d tokens\n", t->vocab_size);
+}
+
+static int str_lookup(const std::string& str, Tokenizer* t) {
+    if (!map_initialized) build_token_map(t);
+    auto it = token_map.find(str);
+    if (it != token_map.end()) return it->second;
+    return -1;
+}
+
+void encode(Tokenizer* t, const char* text, int* tokens, int* n_tokens, int max_tokens) {
+    if (text == NULL) return;
+    
+    if (!map_initialized) build_token_map(t);
+    
+
+    std::vector<int> current_tokens;
+
+    if (t->vocab_size > 1 && strcmp(t->vocab[1], "<s>") == 0) {
+        current_tokens.push_back(1);
+    }
+    
+    std::string processed_text = " ";
+    processed_text += text;
+    
+    for (size_t i = 0; i < processed_text.length(); i++) {
+        std::string ch_str;
+        unsigned char ch = processed_text[i];
+        
+        if (ch == ' ') {
+             ch_str = "\xE2\x96\x81";
+        } else {
+            ch_str = std::string(1, (char)ch);
+        }
+        
+        int id = str_lookup(ch_str, t);
+        if (id == -1) {
+            char byte_token[8];
+            snprintf(byte_token, sizeof(byte_token), "<0x%02X>", ch);
+            id = str_lookup(byte_token, t);
+        }
+        
+        if (id != -1) {
+            current_tokens.push_back(id);
+        } else {
+            fprintf(stderr, "Warning: Tokenizer could not encode char '%c' (0x%02X)\n", ch, ch);
+        }
+    }
+    
+    while (true) {
+        float best_score = -1e10;
+        int best_idx = -1;
+        int best_token = -1;
+        
+        for (size_t i = 0; i < current_tokens.size() - 1; i++) {
+            std::string merged = std::string(t->vocab[current_tokens[i]]) + 
+                                 std::string(t->vocab[current_tokens[i+1]]);
+            
+            int id = str_lookup(merged, t);
+            if (id != -1) {
+                float score = t->vocab_scores[id];
+                if (score > best_score) {
+                    best_score = score;
+                    best_idx = i;
+                    best_token = id;
+                }
+            }
+        }
+        
+        if (best_idx == -1) break;
+        
+        current_tokens[best_idx] = best_token;
+        current_tokens.erase(current_tokens.begin() + best_idx + 1);
+    }
+    
+    *n_tokens = 0;
+    for (int token : current_tokens) {
+        if (*n_tokens < max_tokens) {
+            tokens[(*n_tokens)++] = token;
+        }
+    }
+}
+
+void free_tokenizer(Tokenizer* tokenizer) {
+    if (tokenizer->vocab) {
+        for (int i = 0; i < tokenizer->vocab_size; i++) {
+            free(tokenizer->vocab[i]);
+        }
+        free(tokenizer->vocab);
+    }
+    if (tokenizer->vocab_scores) free(tokenizer->vocab_scores);
 }

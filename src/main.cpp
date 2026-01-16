@@ -14,7 +14,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        printf("Usage: %s <model_path> [tokenizer_path] [temperature]\n", argv[0]);
+        printf("Usage: %s <model_path> [tokenizer_path] [temperature] [-p prompt]\n", argv[0]);
         printf("  For GGUF files, tokenizer is embedded (tokenizer_path optional)\n");
         printf("  For .bin files, tokenizer_path is required\n");
         return 1;
@@ -22,12 +22,25 @@ int main(int argc, char** argv) {
     
     float temperature = 0.9f;
     float topp = 0.9f;
+    char* prompt = NULL;
+    
+    // Parse flags (simple scan)
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            prompt = argv[i + 1];
+        }
+        if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+             temperature = atof(argv[i+1]);
+        }
+    }
+    
     srand(time(NULL));
 
     Config config;
     transformerWeights weights;
     RunState state;
     Tokenizer tokenizer;
+    memset(&tokenizer, 0, sizeof(Tokenizer));
     
     // For cleanup tracking
     GGUFFile* gguf = nullptr;
@@ -67,21 +80,20 @@ int main(int argc, char** argv) {
             tokenizer.vocab_size = config.vocab_size;
         }
         
-        // Optional: external tokenizer override
-        if (argc >= 3 && strcmp(argv[2], "-") != 0) {
-            // Free GGUF tokenizer if loaded, use external instead
+
+        if (argc >= 3 && argv[2][0] != '-') {
+
             if (tokenizer.vocab) free_tokenizer(&tokenizer);
             printf("Loading external tokenizer: %s\n", argv[2]);
             load_tokenizer(&tokenizer, argv[2], config.vocab_size);
         }
         
-        if (argc >= 4) temperature = (float)atof(argv[3]);
+        if (argc >= 4 && argv[3][0] != '-' && argv[2][0] != '-') temperature = (float)atof(argv[3]);
         
     } else {
         // ===================== llama2.c BIN PATH =====================
-        if (argc < 3) {
-            printf("Error: .bin files require tokenizer path\n");
-            printf("Usage: %s <model.bin> <tokenizer.bin> [temperature]\n", argv[0]);
+        if (argc < 3 || argv[2][0] == '-') {
+            printf("Error: .bin files require tokenizer path as 2nd argument\n");
             return 1;
         }
         
@@ -96,7 +108,7 @@ int main(int argc, char** argv) {
         
         checkpoint_init_weights(&weights, &config, bin_data);
         
-        if (argc >= 4) temperature = (float)atof(argv[3]);
+        if (argc >= 4 && argv[3][0] != '-') temperature = (float)atof(argv[3]);
     }
 
     malloc_run_state(&state, &config);
@@ -111,6 +123,7 @@ int main(int argc, char** argv) {
     printf("Seq Len: %d\n", config.seq_len);
     printf("RoPE Base: %.0f\n", config.rope_base);
     printf("Temperature: %.2f\n", temperature);
+    if (prompt) printf("Prompt: \"%s\"\n", prompt);
     
     #ifdef USE_CUDA
     if (config.hidden_dim > MAX_SHARED_FLOATS) {
@@ -122,22 +135,87 @@ int main(int argc, char** argv) {
     
     printf("\n--- Running Inference ---\n");
     
-    int token = 1;  // BOS token
-    int steps = 256;
+    // Tokenize prompt
+    const int MAX_PROMPT_TOKENS = 2048; 
+    int prompt_tokens[2048];
+    int num_prompt_tokens = 0;
+    
+    if (prompt) { // use the prompt
+        encode(&tokenizer, prompt, prompt_tokens, &num_prompt_tokens, MAX_PROMPT_TOKENS);
+        printf("Encoded %d tokens.\n", num_prompt_tokens);
+    } else {
+        // Default to BOS
+        prompt_tokens[0] = 1; 
+        num_prompt_tokens = 1;
+    }
+
+    int token = prompt_tokens[0]; 
+    int pos = 0;
+    int steps = config.seq_len; 
+    
+    // Repetition penalty history buffer
+    const int HISTORY_LEN = 64;
+    int history[64];
+    int current_history_len = 0;
+    
     clock_t start = clock();
 
-    for (int pos = 0; pos < steps; pos++) {
-        token = forward(token, pos, &state, &weights, &config, temperature, topp);
-        
-        if (tokenizer.vocab) {
-            char* token_str = decode_token(&tokenizer, token);
-            if (strcmp(token_str, "<0x0A>") == 0) {
-                printf("\n");
-            } else {
-                printf("%s", token_str);
-            }
+    // 1. Prefill
+    for (int i = 0; i < num_prompt_tokens - 1; i++) {
+        // Add to history
+        if (current_history_len < HISTORY_LEN) {
+            history[current_history_len++] = prompt_tokens[i];
         } else {
-            printf("[%d]", token);
+            memmove(history, history + 1, (HISTORY_LEN - 1) * sizeof(int));
+            history[HISTORY_LEN - 1] = prompt_tokens[i];
+        }
+
+        int next_token = forward(prompt_tokens[i], pos, &state, &weights, &config, 
+                                temperature, topp, 1.1f, history, current_history_len);
+        (void)next_token; // Ignore output, force next prompt token
+        
+        char* token_str = decode_token(&tokenizer, prompt_tokens[i]);
+        printf("%s", token_str);
+        
+        pos++;
+    }
+    
+    // 2. Setup for generation
+    token = prompt_tokens[num_prompt_tokens - 1]; // Input is last prompt token
+    
+    // Add last prompt token to history
+    if (current_history_len < HISTORY_LEN) {
+        history[current_history_len++] = token;
+    } else {
+        memmove(history, history + 1, (HISTORY_LEN - 1) * sizeof(int));
+        history[HISTORY_LEN - 1] = token;
+    }
+    
+    char* token_str = decode_token(&tokenizer, token); // Print it
+    printf("%s", token_str);
+    fflush(stdout);
+    
+    // 3. Generation loop
+    for (; pos < steps; pos++) {
+        token = forward(token, pos, &state, &weights, &config, temperature, topp, 1.05f, history, current_history_len);
+        
+        // Add generated token to history
+        if (current_history_len < HISTORY_LEN) {
+            history[current_history_len++] = token;
+        } else {
+            memmove(history, history + 1, (HISTORY_LEN - 1) * sizeof(int));
+            history[HISTORY_LEN - 1] = token;
+        }
+        
+        char* token_str = decode_token(&tokenizer, token);
+        if (token == 2 || strcmp(token_str, "</s>") == 0) { 
+             break;
+        }
+        
+        if (strcmp(token_str, "<0x0A>") == 0) {
+            printf("\n");
+        } else {
+            printf("%s", token_str);
         }
         fflush(stdout);
     }
@@ -146,9 +224,9 @@ int main(int argc, char** argv) {
     double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
     
     printf("\n\n--- Statistics ---\n");
-    printf("Tokens generated: %d\n", steps);
+    printf("Tokens generated: %d\n", pos);
     printf("Elapsed time: %.2f s\n", elapsed);
-    printf("Tokens per second: %.2f tok/s\n", (float)steps / elapsed);
+    printf("Tokens per second: %.2f tok/s\n", (float)pos / elapsed);
 
     #ifdef USE_CUDA
     free_weights_cuda(&weights);
@@ -159,7 +237,6 @@ int main(int argc, char** argv) {
     }
     
     if (using_gguf) {
-        // GGUF weights were malloc'd, need to free individually
         free(weights.token_embedding_table);
         if (weights.w_cls != weights.token_embedding_table) free(weights.w_cls);
         free(weights.rms_att_weight);

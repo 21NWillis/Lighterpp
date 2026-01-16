@@ -34,7 +34,7 @@ if(USE_CUDA)
     set(CMAKE_CUDA_STANDARD_REQUIRED True)
     
     # Add CUDA sources
-    set(CUDA_SOURCES src/matmul.cu src/RMSNorm.cu src/rope.cu src/swiglu.cu src/softmax.cu src/aggregation.cu src/scale.cu src/residual.cu src/scatter_kv.cu)
+    set(CUDA_SOURCES src/matmul.cu src/RMSNorm.cu src/rope.cu src/swiglu.cu src/softmax.cu src/aggregation.cu src/scale.cu src/residual.cu src/scatter_kv.cu src/multihead_gemv.cu)
     
     # Define USE_CUDA preprocessor macro
     add_definitions(-DUSE_CUDA)

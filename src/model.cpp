@@ -116,15 +116,9 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     // RoPE on GPU
     cuda_rope(s->d_q, s->d_k, pos, dim, kv_dim, head_size);
     
-    // KV Cache Update (device to device)
-    for (int h = 0; h < p->n_kv_heads; h++) {
-        int src_offset = h * head_size;
-        int dst_offset = layer * (kv_dim * p->seq_len) + h * cache_stride + pos * head_size;
-        cudaMemcpy(s->d_key_cache + dst_offset, s->d_k + src_offset, 
-                   head_size * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(s->d_value_cache + dst_offset, s->d_v + src_offset, 
-                   head_size * sizeof(float), cudaMemcpyDeviceToDevice);
-    }
+    // KV Cache Update - single kernel replaces per-head cudaMemcpy loop
+    cuda_scatter_kv(s->d_key_cache, s->d_value_cache, s->d_k, s->d_v,
+                    layer, pos, p->n_kv_heads, head_size, p->seq_len);
 
     // Multi-head attention 
 

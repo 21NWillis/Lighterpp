@@ -103,6 +103,7 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
 │   ├── scale.cu          # CUDA Scale kernel (multi-head)
 │   ├── aggregation.cu    # CUDA Aggregation kernel (multi-head)
 │   ├── residual.cu       # CUDA Residual Add kernel
+│   ├── scatter_kv.cu     # CUDA KV Cache scatter kernel
 │   └── kernels.cuh       # CUDA kernel declarations
 ├── CMakeLists.txt        # Build configuration
 └── README.md             # Documentation

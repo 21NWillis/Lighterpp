@@ -95,4 +95,18 @@ void cuda_softmax_multihead(float* d_out, float* d_x, int n_heads, int seq_len, 
 //   att_stride: Stride between heads in attention buffer (p->seq_len)
 void cuda_aggregation_multihead(float* d_out, const float* d_v, const float* d_att, int n_heads, int seq_len, int head_size, int gqa_factor, int att_stride);
 
+// CUDA Scatter KV Cache - scatters K and V into cache positions in one kernel launch
+// Replaces per-head cudaMemcpy loop for better performance
+// Parameters:
+//   d_key_cache:   Key cache [n_layers × n_kv_heads × seq_len × head_size]
+//   d_value_cache: Value cache [n_layers × n_kv_heads × seq_len × head_size]
+//   d_k:           Current key vector [kv_dim] (contiguous)
+//   d_v:           Current value vector [kv_dim] (contiguous)
+//   layer:         Current layer index
+//   pos:           Current position in sequence
+//   n_kv_heads:    Number of KV heads
+//   head_size:     Dimension per head
+//   seq_len:       Maximum sequence length (for stride calculation)
+void cuda_scatter_kv(float* d_key_cache, float* d_value_cache, const float* d_k, const float* d_v, int layer, int pos, int n_kv_heads, int head_size, int seq_len);
+
 #endif

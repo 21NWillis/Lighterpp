@@ -32,8 +32,12 @@ void malloc_run_state(RunState* s, Config* p) {
     //ATTENTION SCORES
     s->att = (float*)calloc(p->n_heads * p->seq_len, sizeof(float));
 
-    //LOGITS
+    //LOGITS - Use pinned memory for faster GPU->CPU transfer during inference
+    #ifdef USE_CUDA
+    cudaHostAlloc(&s->logits, p->vocab_size * sizeof(float), cudaHostAllocDefault);
+    #else
     s->logits = (float*)calloc(p->vocab_size, sizeof(float));
+    #endif
 
     // KV CACHE
     int kv_cache_size = p->n_layers * p->seq_len * kv_dim;
@@ -75,7 +79,11 @@ void free_run_state(RunState* s) {
     free(s->k);
     free(s->v);
     free(s->att);
+    #ifdef USE_CUDA
+    cudaFreeHost(s->logits);  // Pinned memory needs cudaFreeHost
+    #else
     free(s->logits);
+    #endif
     free(s->key_cache);
     free(s->value_cache);
 
@@ -114,7 +122,7 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     cuda_gemv(s->d_v, s->d_xb, w->d_wv + layer_offset_kv, kv_dim, dim);
 
     // RoPE on GPU
-    cuda_rope(s->d_q, s->d_k, pos, dim, kv_dim, head_size);
+    cuda_rope(s->d_q, s->d_k, pos, dim, kv_dim, head_size, p->rope_base);
     
     // KV Cache Update - single kernel replaces per-head cudaMemcpy loop
     cuda_scatter_kv(s->d_key_cache, s->d_value_cache, s->d_k, s->d_v,
@@ -151,7 +159,7 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     naive_matmul(s->k, s->xb, w->wk + layer_offset_kv, kv_dim, dim);
     naive_matmul(s->v, s->xb, w->wv + layer_offset_kv, kv_dim, dim);
 
-    rope(s->q, s->k, pos, dim, kv_dim, head_size);
+    rope(s->q, s->k, pos, dim, kv_dim, head_size, p->rope_base);
     
     for (int h = 0; h < p->n_kv_heads; h++) {
         int src_offset = h * head_size;

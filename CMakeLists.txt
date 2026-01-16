@@ -25,7 +25,7 @@ else()
 endif()
 
 # Define source files
-set(SOURCES src/tensor.cpp src/loader.cpp src/ops.cpp src/model.cpp src/tokenizer.cpp)
+set(SOURCES src/tensor.cpp src/loader.cpp src/ops.cpp src/model.cpp src/tokenizer.cpp src/gguf.cpp)
 
 # CUDA Configuration
 if(USE_CUDA)

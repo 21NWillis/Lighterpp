@@ -17,6 +17,7 @@ struct Config {
     int n_kv_heads; // Number of key/value heads (can be < n_heads for GQA)
     int vocab_size; // Vocabulary size (e.g. 32000)
     int seq_len;    // Maximum sequence length (context window)
+    float rope_base; // RoPE frequency base (10000 for LLaMA 2, 500000 for LLaMA 3)
 };
 
 // Storage for model weights (read-only during inference)

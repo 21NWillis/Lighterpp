@@ -27,7 +27,7 @@ void RMSNorm(float* out, float* x, float* weight, int n);
 //  dim:    Query dimension
 //  kv_dim: Key dimension
 //  head_size: Head size
-void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size);
+void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size, float rope_base);
 
 // Softmax Function
 // Parameters:

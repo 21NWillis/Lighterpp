@@ -31,10 +31,10 @@ void RMSNorm(float* out, float* x, float* weight, int n) {
     }
 }
 
-void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size) {
+void rope(float* q, float* k, int pos, int dim, int kv_dim, int head_size, float rope_base) {
     for (int i = 0; i < dim; i+=2) {
         int head_dim = i % head_size;
-        float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
+        float freq = 1.0f / powf(rope_base, head_dim / (float)head_size);
         float val = pos * freq;
         float fcos = cosf(val);
         float fsin = sinf(val);

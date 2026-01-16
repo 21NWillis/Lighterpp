@@ -4,13 +4,13 @@
 
 
 
-__global__ void rope_kernel(float* q, float* k, int pos, int dim, int kv_dim, int head_size) {
+__global__ void rope_kernel(float* q, float* k, int pos, int dim, int kv_dim, int head_size, float rope_base) {
     int pair_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (pair_idx >= dim / 2) return;
 
     int head_dim = (pair_idx * 2) % head_size;
     
-    float freq = 1.0f / powf(10000.0f, head_dim/float(head_size));
+    float freq = 1.0f / powf(rope_base, head_dim/float(head_size));
     float theta = pos * freq;
     float cos_theta = cosf(theta);
     float sin_theta = sinf(theta);
@@ -31,9 +31,9 @@ __global__ void rope_kernel(float* q, float* k, int pos, int dim, int kv_dim, in
 }
 
 // Host wrapper function
-void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_size) {
+void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_size, float rope_base) {
     int num_pairs = dim / 2;
     int num_blocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    rope_kernel<<<num_blocks, BLOCK_SIZE>>>(d_q, d_k, pos, dim, kv_dim, head_size);
+    rope_kernel<<<num_blocks, BLOCK_SIZE>>>(d_q, d_k, pos, dim, kv_dim, head_size, rope_base);
 }
 

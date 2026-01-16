@@ -29,7 +29,7 @@ void cuda_rmsnorm(float* d_out, float* d_x, float* d_w, int n);
 //   dim:       Query dimension
 //   kv_dim:    Key/Value dimension
 //   head_size: Size of each attention head
-void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_size);
+void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_size, float rope_base);
 
 // CUDA SwiGLU
 // Computes: hb = SiLU(h1) * h3

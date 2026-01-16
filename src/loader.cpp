@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <cstring>
 
 #ifdef USE_CUDA
 #include "kernels.cuh"
@@ -157,6 +158,9 @@ float* load_model_file(const char* checkpoint_path, Config* config, size_t* file
     Config* file_config = (Config*)addr;
     *config = *file_config;
     
+    // llama2.c format doesn't include rope_base, default to 10000 (LLaMA 2)
+    config->rope_base = 10000.0f;
+    
     float* weightspointer = (float*)((char*)addr + 28);
 
     *file_size_out = file_size;
@@ -189,3 +193,302 @@ void free_weights_cuda(transformerWeights* w) {
     cudaFree(w->d_rms_final_weight);
 }
 #endif
+
+// =============================================================================
+// GGUF FORMAT LOADING
+// =============================================================================
+
+bool is_gguf_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    
+    uint32_t magic;
+    size_t read = fread(&magic, sizeof(uint32_t), 1, f);
+    fclose(f);
+    
+    // GGUF magic is "GGUF" = 0x46554747 in little-endian
+    return (read == 1 && magic == 0x46554747);
+}
+
+bool gguf_extract_config(GGUFFile* file, Config* config) {
+    // Get architecture name to determine key prefix
+    // LLaMA models use "llama.*" keys
+    char* arch = nullptr;
+    if (!gguf_get_string(file, "general.architecture", &arch)) {
+        std::cerr << "GGUF: Missing general.architecture" << std::endl;
+        return false;
+    }
+    
+    std::cout << "GGUF: Architecture = " << arch << std::endl;
+    
+    // Build key prefix (e.g., "llama.")
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "%s.", arch);
+    
+    // Helper to build full key names
+    char key[128];
+    
+    // Extract embedding dimension
+    snprintf(key, sizeof(key), "%sembedding_length", prefix);
+    uint32_t dim;
+    if (!gguf_get_uint32(file, key, &dim)) {
+        std::cerr << "GGUF: Missing " << key << std::endl;
+        free(arch);
+        return false;
+    }
+    config->dim = dim;
+    
+    // Extract hidden dimension (FFN intermediate size)
+    snprintf(key, sizeof(key), "%sfeed_forward_length", prefix);
+    uint32_t hidden_dim;
+    if (!gguf_get_uint32(file, key, &hidden_dim)) {
+        std::cerr << "GGUF: Missing " << key << std::endl;
+        free(arch);
+        return false;
+    }
+    config->hidden_dim = hidden_dim;
+    
+    // Extract number of layers
+    snprintf(key, sizeof(key), "%sblock_count", prefix);
+    uint32_t n_layers;
+    if (!gguf_get_uint32(file, key, &n_layers)) {
+        std::cerr << "GGUF: Missing " << key << std::endl;
+        free(arch);
+        return false;
+    }
+    config->n_layers = n_layers;
+    
+    // Extract number of attention heads
+    snprintf(key, sizeof(key), "%sattention.head_count", prefix);
+    uint32_t n_heads;
+    if (!gguf_get_uint32(file, key, &n_heads)) {
+        std::cerr << "GGUF: Missing " << key << std::endl;
+        free(arch);
+        return false;
+    }
+    config->n_heads = n_heads;
+    
+    // Extract number of KV heads (for GQA)
+    snprintf(key, sizeof(key), "%sattention.head_count_kv", prefix);
+    uint32_t n_kv_heads;
+    if (!gguf_get_uint32(file, key, &n_kv_heads)) {
+        // If not present, assume same as n_heads (no GQA)
+        n_kv_heads = n_heads;
+    }
+    config->n_kv_heads = n_kv_heads;
+    
+    // Extract context length
+    snprintf(key, sizeof(key), "%scontext_length", prefix);
+    uint32_t seq_len;
+    if (!gguf_get_uint32(file, key, &seq_len)) {
+        std::cerr << "GGUF: Missing " << key << std::endl;
+        free(arch);
+        return false;
+    }
+    config->seq_len = seq_len;
+    
+    // Extract RoPE frequency base (defaults to 10000 for LLaMA 2)
+    snprintf(key, sizeof(key), "%srope.freq_base", prefix);
+    float rope_base;
+    if (!gguf_get_float32(file, key, &rope_base)) {
+        rope_base = 10000.0f;  // Default for LLaMA 2
+    }
+    config->rope_base = rope_base;
+    
+    // Get vocabulary size from tokenizer
+    // We count the tokens array rather than reading a separate field
+    char** vocab;
+    size_t vocab_size = gguf_get_string_array(file, "tokenizer.ggml.tokens", &vocab);
+    if (vocab_size == 0) {
+        std::cerr << "GGUF: Missing tokenizer.ggml.tokens" << std::endl;
+        free(arch);
+        return false;
+    }
+    config->vocab_size = vocab_size;
+    
+    // Free vocabulary (we just needed the count)
+    for (size_t i = 0; i < vocab_size; i++) free(vocab[i]);
+    free(vocab);
+    
+    free(arch);
+    
+    std::cout << "GGUF Config: dim=" << config->dim
+              << ", hidden_dim=" << config->hidden_dim
+              << ", n_layers=" << config->n_layers
+              << ", n_heads=" << config->n_heads
+              << ", n_kv_heads=" << config->n_kv_heads
+              << ", vocab_size=" << config->vocab_size
+              << ", seq_len=" << config->seq_len
+              << ", rope_base=" << config->rope_base
+              << std::endl;
+    
+    return true;
+}
+
+// =============================================================================
+// GGUF Weight Loading
+// 
+// Key differences from llama2.c format:
+// 1. Tensors are named (e.g., "blk.5.attn_q.weight") instead of sequential
+// 2. Per-layer tensors must be concatenated into stacked arrays
+// 3. May need F16→F32 conversion
+// =============================================================================
+
+// Convert F16 to F32 (IEEE 754 half-precision)
+static float f16_to_f32(uint16_t h) {
+    uint32_t sign = (h & 0x8000) << 16;
+    uint32_t exp = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x03FF;
+    
+    if (exp == 0) {
+        // Subnormal or zero
+        if (mant == 0) {
+            uint32_t result = sign;
+            return *(float*)&result;
+        }
+        // Subnormal: normalize
+        while ((mant & 0x0400) == 0) {
+            mant <<= 1;
+            exp--;
+        }
+        exp++;
+        mant &= ~0x0400;
+    } else if (exp == 31) {
+        // Inf or NaN
+        uint32_t result = sign | 0x7F800000 | (mant << 13);
+        return *(float*)&result;
+    }
+    
+    exp += 127 - 15;  // Adjust exponent bias
+    uint32_t result = sign | (exp << 23) | (mant << 13);
+    return *(float*)&result;
+}
+
+// Copy tensor data, converting F16 to F32 if needed
+static void copy_tensor_data(float* dst, GGUFFile* file, GGUFTensorInfo* tensor) {
+    void* src = gguf_tensor_data(file, tensor);
+    size_t nelements = 1;
+    for (uint32_t d = 0; d < tensor->n_dims; d++) {
+        nelements *= tensor->dims[d];
+    }
+    
+    if (tensor->type == GGML_TYPE_F32) {
+        memcpy(dst, src, nelements * sizeof(float));
+    } else if (tensor->type == GGML_TYPE_F16) {
+        uint16_t* src16 = (uint16_t*)src;
+        for (size_t i = 0; i < nelements; i++) {
+            dst[i] = f16_to_f32(src16[i]);
+        }
+    } else {
+        std::cerr << "GGUF: Unsupported tensor type " << tensor->type 
+                  << " for " << tensor->name << std::endl;
+        // Zero fill for unsupported types
+        memset(dst, 0, nelements * sizeof(float));
+    }
+}
+
+bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
+    int head_size = p->dim / p->n_heads;
+    int kv_dim = p->n_kv_heads * head_size;
+    
+    // Allocate weight arrays (stacked across all layers)
+    w->token_embedding_table = (float*)malloc(p->vocab_size * p->dim * sizeof(float));
+    w->rms_att_weight = (float*)malloc(p->n_layers * p->dim * sizeof(float));
+    w->wq = (float*)malloc(p->n_layers * p->dim * p->dim * sizeof(float));
+    w->wk = (float*)malloc(p->n_layers * p->dim * kv_dim * sizeof(float));
+    w->wv = (float*)malloc(p->n_layers * p->dim * kv_dim * sizeof(float));
+    w->wo = (float*)malloc(p->n_layers * p->dim * p->dim * sizeof(float));
+    w->rms_ffn_weight = (float*)malloc(p->n_layers * p->dim * sizeof(float));
+    w->w1 = (float*)malloc(p->n_layers * p->dim * p->hidden_dim * sizeof(float));
+    w->w2 = (float*)malloc(p->n_layers * p->hidden_dim * p->dim * sizeof(float));
+    w->w3 = (float*)malloc(p->n_layers * p->dim * p->hidden_dim * sizeof(float));
+    w->rms_final_weight = (float*)malloc(p->dim * sizeof(float));
+    
+    // Token embedding
+    GGUFTensorInfo* t = gguf_find_tensor(file, "token_embd.weight");
+    if (!t) {
+        std::cerr << "GGUF: Missing token_embd.weight" << std::endl;
+        return false;
+    }
+    copy_tensor_data(w->token_embedding_table, file, t);
+    
+    // Output/classifier weights (may be tied to embedding or separate)
+    t = gguf_find_tensor(file, "output.weight");
+    if (t) {
+        // Separate output weights - allocate and copy
+        w->w_cls = (float*)malloc(p->vocab_size * p->dim * sizeof(float));
+        copy_tensor_data(w->w_cls, file, t);
+    } else {
+        // Tied weights - share with embedding
+        w->w_cls = w->token_embedding_table;
+    }
+    
+    // Final RMSNorm
+    t = gguf_find_tensor(file, "output_norm.weight");
+    if (!t) {
+        std::cerr << "GGUF: Missing output_norm.weight" << std::endl;
+        return false;
+    }
+    copy_tensor_data(w->rms_final_weight, file, t);
+    
+    // Per-layer weights
+    char name[128];
+    for (int layer = 0; layer < p->n_layers; layer++) {
+        // Attention norm
+        snprintf(name, sizeof(name), "blk.%d.attn_norm.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->rms_att_weight + layer * p->dim, file, t);
+        
+        // Q projection
+        snprintf(name, sizeof(name), "blk.%d.attn_q.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->wq + layer * p->dim * p->dim, file, t);
+        
+        // K projection
+        snprintf(name, sizeof(name), "blk.%d.attn_k.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->wk + layer * p->dim * kv_dim, file, t);
+        
+        // V projection
+        snprintf(name, sizeof(name), "blk.%d.attn_v.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->wv + layer * p->dim * kv_dim, file, t);
+        
+        // Output projection
+        snprintf(name, sizeof(name), "blk.%d.attn_output.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->wo + layer * p->dim * p->dim, file, t);
+        
+        // FFN norm
+        snprintf(name, sizeof(name), "blk.%d.ffn_norm.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->rms_ffn_weight + layer * p->dim, file, t);
+        
+        // FFN gate (w1)
+        snprintf(name, sizeof(name), "blk.%d.ffn_gate.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->w1 + layer * p->dim * p->hidden_dim, file, t);
+        
+        // FFN down (w2)
+        snprintf(name, sizeof(name), "blk.%d.ffn_down.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->w2 + layer * p->hidden_dim * p->dim, file, t);
+        
+        // FFN up (w3)
+        snprintf(name, sizeof(name), "blk.%d.ffn_up.weight", layer);
+        t = gguf_find_tensor(file, name);
+        if (!t) { std::cerr << "GGUF: Missing " << name << std::endl; return false; }
+        copy_tensor_data(w->w3 + layer * p->dim * p->hidden_dim, file, t);
+    }
+    
+    std::cout << "GGUF: Loaded weights for " << p->n_layers << " layers" << std::endl;
+    return true;
+}

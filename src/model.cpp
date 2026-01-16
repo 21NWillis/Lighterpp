@@ -108,6 +108,7 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     int dim = p->dim;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = dim / p->n_heads;
+    int cache_stride = p->seq_len * head_size;
 
     int layer_offset_qkv = layer * dim * dim;
     int layer_offset_kv = layer * kv_dim * dim;

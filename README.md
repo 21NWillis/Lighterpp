@@ -7,7 +7,7 @@
 
 
 ![Lighter++ Demo](assets/demo.gif)
-*(Running inference on the TinyStories 110M parameter model)*
+*(Running inference on the Tinyllama 1.1B parameter model)*
 
 ## Abstract
 Lighter++ is a high-performance, custom-built Inference Engine for Large Language Models (LLMs), specifically targeting the Llama 2 architecture. Implemented entirely in C++ and CUDA without using existing frameworks like PyTorch or TensorFlow. This is to learn and demonstrate a "from-scratch" understanding of tensor operations, memory management, and hardware optimization.

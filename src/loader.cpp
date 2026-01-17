@@ -571,6 +571,24 @@ bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
 // =============================================================================
 
 bool gguf_init_tokenizer(GGUFFile* file, Tokenizer* tokenizer) {
+    // - "llama" = SentencePiece (LLaMA 2, uses ▁ for space)
+    // - "gpt2"  = Tiktoken BPE (LLaMA 3, uses Ġ for space)
+    char* tokenizer_model = nullptr;
+    if (gguf_get_string(file, "tokenizer.ggml.model", &tokenizer_model)) {
+        if (strcmp(tokenizer_model, "gpt2") == 0) {
+            tokenizer->type = TOKENIZER_BPE;
+            std::cout << "GGUF: Detected tokenizer type = BPE (LLaMA 3 style)" << std::endl;
+        } else {
+            tokenizer->type = TOKENIZER_SENTENCEPIECE;
+            std::cout << "GGUF: Detected tokenizer type = SentencePiece (" << tokenizer_model << ")" << std::endl;
+        }
+        free(tokenizer_model);
+    } else {
+        // Default to SentencePiece if not specified
+        tokenizer->type = TOKENIZER_SENTENCEPIECE;
+        std::cout << "GGUF: No tokenizer.ggml.model found, defaulting to SentencePiece" << std::endl;
+    }
+    
     // Get vocabulary tokens
     char** vocab = nullptr;
     size_t vocab_size = gguf_get_string_array(file, "tokenizer.ggml.tokens", &vocab);

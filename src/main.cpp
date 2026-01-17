@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
 
     int token = prompt_tokens[0]; 
     int pos = 0;
-    int steps = config.seq_len; 
+    int steps = 200; 
     
     // Repetition penalty history buffer
     const int HISTORY_LEN = 64;

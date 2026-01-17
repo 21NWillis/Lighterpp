@@ -1,11 +1,17 @@
 #ifndef TOKENIZER_H
 #define TOKENIZER_H
 
+typedef enum {
+    TOKENIZER_SENTENCEPIECE,
+    TOKENIZER_BPE
+} TokenizerType;
+
 typedef struct {
     char** vocab;
     float* vocab_scores;
     int vocab_size;
     int max_token_len;
+    TokenizerType type;
 } Tokenizer;
 
 void load_tokenizer(Tokenizer* tokenizer, const char* path, int vocab_size);

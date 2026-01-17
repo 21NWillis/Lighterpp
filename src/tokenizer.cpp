@@ -21,6 +21,7 @@ void load_tokenizer(Tokenizer* tokenizer, const char* path, int vocab_size) {
     }
 
     tokenizer->vocab_size = vocab_size;
+    tokenizer->type = TOKENIZER_SENTENCEPIECE;  // Legacy format is always SentencePiece
 
     if (fread(&tokenizer->max_token_len, sizeof(int), 1, file) != 1) {
         printf("Error: Could not read max token length\n");
@@ -81,22 +82,39 @@ char* decode_token(Tokenizer* tokenizer, int token_id) {
         return decoded_buffer;
     }
     
-    // SentencePiece uses ▁ (U+2581, "Lower One Eighth Block") for spaces
-    // It's encoded as 3 bytes: 0xE2 0x96 0x81
+    // - SentencePiece (LLaMA 2): ▁ = U+2581 = 0xE2 0x96 0x81 (3 bytes)
+    // - BPE/Tiktoken (LLaMA 3): Ġ = U+0120 = 0xC4 0xA0 (2 bytes)
     char* src = raw;
     char* dst = decoded_buffer;
     char* dst_end = decoded_buffer + sizeof(decoded_buffer) - 1;
     
     while (*src && dst < dst_end) {
-        // Check for SentencePiece space marker (▁ = 0xE2 0x96 0x81)
-        if ((unsigned char)src[0] == 0xE2 && 
-            (unsigned char)src[1] == 0x96 && 
-            (unsigned char)src[2] == 0x81) {
-            *dst++ = ' ';
-            src += 3;
+        if (tokenizer->type == TOKENIZER_BPE) {
+            // BPE/Tiktoken: Check for Ġ (0xC4 0xA0) = space
+            if ((unsigned char)src[0] == 0xC4 && 
+                (unsigned char)src[1] == 0xA0) {
+                *dst++ = ' ';
+                src += 2;
+                continue;
+            }
+            // BPE/Tiktoken: Check for Ċ (0xC4 0x8A) = newline
+            if ((unsigned char)src[0] == 0xC4 && 
+                (unsigned char)src[1] == 0x8A) {
+                *dst++ = '\n';
+                src += 2;
+                continue;
+            }
         } else {
-            *dst++ = *src++;
+            // SentencePiece: Check for ▁ (0xE2 0x96 0x81)
+            if ((unsigned char)src[0] == 0xE2 && 
+                (unsigned char)src[1] == 0x96 && 
+                (unsigned char)src[2] == 0x81) {
+                *dst++ = ' ';
+                src += 3;
+                continue;
+            }
         }
+        *dst++ = *src++;
     }
     *dst = '\0';
     
@@ -135,19 +153,35 @@ void encode(Tokenizer* t, const char* text, int* tokens, int* n_tokens, int max_
 
     std::vector<int> current_tokens;
 
-    if (t->vocab_size > 1 && strcmp(t->vocab[1], "<s>") == 0) {
-        current_tokens.push_back(1);
+    // Add BOS token if present
+    // SentencePiece: typically token 1 = "<s>"
+    // BPE (LLaMA 3): typically token 128000 = "<|begin_of_text|>"
+    if (t->type == TOKENIZER_BPE) {
+        // LLaMA 3 uses <|begin_of_text|> as BOS
+        int bos_id = str_lookup("<|begin_of_text|>", t);
+        if (bos_id != -1) {
+            current_tokens.push_back(bos_id);
+        }
+    } else {
+        // SentencePiece: token 1 is usually <s>
+        if (t->vocab_size > 1 && strcmp(t->vocab[1], "<s>") == 0) {
+            current_tokens.push_back(1);
+        }
     }
     
     std::string processed_text = " ";
     processed_text += text;
+    
+    // - BPE (LLaMA 3): Ġ = 0xC4 0xA0
+    // - SentencePiece (LLaMA 2): ▁ = 0xE2 0x96 0x81
+    const char* space_marker = (t->type == TOKENIZER_BPE) ? "\xC4\xA0" : "\xE2\x96\x81";
     
     for (size_t i = 0; i < processed_text.length(); i++) {
         std::string ch_str;
         unsigned char ch = processed_text[i];
         
         if (ch == ' ') {
-             ch_str = "\xE2\x96\x81";
+             ch_str = space_marker;
         } else {
             ch_str = std::string(1, (char)ch);
         }

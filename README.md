@@ -3,7 +3,7 @@
 # Lighter++: A C++/CUDA LLM Inference Engine
 
 **Author:** Nate Willis  
-**Status:** In Development (Phase I: CPU Foundation: Completed, Phase II: Transformer Architecture: Completed, Phase III: CUDA Acceleration: In Progress)
+**Status:** In Development (Phase III: CUDA Acceleration & Optimization)
 
 
 ![Lighter++ Demo](assets/demo.gif)
@@ -12,7 +12,7 @@
 ## Abstract
 Lighter++ is a high-performance, custom-built Inference Engine for Large Language Models (LLMs), specifically targeting the Llama 2 architecture. Implemented entirely in C++ and CUDA without using existing frameworks like PyTorch or TensorFlow. This is to learn and demonstrate a "from-scratch" understanding of tensor operations, memory management, and hardware optimization.
 
-The engine currently supports loading `llama2.c` compatible model checkpoints (e.g., `stories15M.bin`, `stories110M.bin`).
+The engine currently supports loading **GGUF** model checkpoints (e.g., `tinyllama-1.1b-chat.gguf`), enabling support for real-world models. It also has legacy support for loading `llama2.c` compatible model checkpoints (e.g., `stories15M.bin`, `stories110M.bin`).
 
 ## Current Status: GPU-Resident Inference
 The entire transformer forward pass now runs on the GPU. The attention mechanism requires only **one memory copy in** (token embedding) and **one memory copy out** (logits) per token. All intermediate computations—RMSNorm, RoPE, Q/K/V projections, attention scoring, softmax, aggregation, FFN—remain on device memory throughout inference.
@@ -21,15 +21,11 @@ The entire transformer forward pass now runs on the GPU. The attention mechanism
 ### Performance Benchmarks
 **Hardware:** AMD Ryzen 7 3700X, NVIDIA RTX 3070 (8GB VRAM), WSL2 (Ubuntu)
 
-#### stories110M.bin (110M Parameters)
-
-| Engine | Performance (tok/s) | Notes |
-| :--- | :---: | :--- |
-| **Lighter++ (CPU)** | 11 | Single-threaded CPU baseline |
-| **llama2.c** | 12 | Reference implementation (CPU) |
-| **Lighter++ (GPU)** | 128 | Full CUDA acceleration |
-
-*GPU achieves ~11x speedup over single-threaded CPU baseline*
+#### TinyLlama-1.1B-Chat
+| Version | Engine | Precision | Performance (tok/s) | Notes |
+| :---: | :--- | :---: | :---: | :--- |
+| **v0.1** | **Lighter++ (GPU)** | FP32 | **45** | Basic GPU-Resident Inference |
+| **v0.2** | **Lighter++ (GPU)** | FP16 | **TBD** | Native Half-Precision (Coming Soon) |
 
 
 ## Key Architectural Decisions
@@ -101,6 +97,7 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
 │   ├── main.cpp          # Application entry point
 │   ├── runtests.cpp      # Unit testing suite
 │   ├── matmul.cu         # CUDA GEMV kernel
+│   ├── multihead.cu      # CUDA Multi-Head Attention kernel
 │   ├── RMSNorm.cu        # CUDA RMSNorm kernel
 │   ├── rope.cu           # CUDA RoPE kernel
 │   ├── swiglu.cu         # CUDA SwiGLU kernel
@@ -189,16 +186,28 @@ Lighter++ includes a test suite to verify the mathematical correctness of its op
 - [x] CUDA Kernels: GEMV, RMSNorm, RoPE, SwiGLU, Softmax, Scale, Aggregation, Residual Add.
 - [x] Multi-Head Kernels: Single-launch kernels for Scale, Softmax, and Aggregation.
 - [x] Memory Transfer Optimization: Single memcpy per token (GPU-resident inference).
-- [ ] Fused Attention Kernel (FlashDecoding): Combine Q·K^T, Scale, Softmax, V aggregation.
-- [ ] Quantization: INT4/INT8 weight compression with on-the-fly dequantization.
-- [ ] Profiling and Final Optimization.
+- [x] **Multi-Head GEMV Kernel** (Major Speedup).
+- [x] **GGUF Format Support**.
+- [ ] Quantization: INT4 weight compression.
 
 ### Phase IV: Production Features (Future)
-- [ ] GGUF Model Format Support.
 - [ ] LLaMA 3 Architecture Support.
 - [ ] Prompt/Chat Interface.
 - [ ] Final Documentation and Benchmarks.
 
+
+<details>
+<summary><strong>Legacy Benchmarks (TinyStories 110M)</strong></summary>
+
+#### stories110M.bin (110M Parameters)
+| Engine | Performance (tok/s) | Notes |
+| :--- | :---: | :--- |
+| **Lighter++ (CPU)** | 11 | Single-threaded CPU baseline |
+| **llama2.c** | 12 | Reference implementation (CPU) |
+| **Lighter++ (GPU)** | 128 | Full CUDA acceleration |
+
+*GPU achieves ~11x speedup over single-threaded CPU baseline*
+</details>
 
 ## Acknowledgments
 

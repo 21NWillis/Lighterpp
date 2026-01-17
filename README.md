@@ -25,7 +25,7 @@ The entire transformer forward pass now runs on the GPU. The attention mechanism
 | Version | Engine | Precision | Performance (tok/s) | Notes |
 | :---: | :--- | :---: | :---: | :--- |
 | **v0.1** | **Lighter++ (GPU)** | FP32 | **45** | Basic GPU-Resident Inference |
-| **v0.2** | **Lighter++ (GPU)** | FP16 | **TBD** | Native Half-Precision (Coming Soon) |
+| **v0.2** | **Lighter++ (GPU)** | FP16 | **72** | Native Half-Precision (Coming Soon) |
 
 
 ## Key Architectural Decisions
@@ -76,7 +76,15 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
     *   **Cause:** Hardcoded 4096 float buffer in `gemv_kernel` overflowed with larger models (5632 dim), causing silent corruption.
     *   **Fix:** Increased buffer to 40KB (10240 floats) and added runtime safety check.
 
-**Lessons Learned:** Comprehensive unit tests are necessary to catch silent failures. Integration tests comparing GPU vs CPU output helped isolate kernel-level bugs. Error out when memory is out of bounds so it doesn't silently fail.
+#### 6. Llama 3 Performance "Tank"
+*   **Cause:** Static shared memory allocation (40KB) limited occupancy to 2 blocks/SM. The massive 128k vocabulary grid launch serialized and crawled.
+*   **Fix:** Implemented **Dynamic Shared Memory** to request exact size (~4KB), increasing parallelism 10x.
+
+#### 7. VRAM Exhaustion
+*   **Cause:** Llama 3 defaulted to 131k context window, allocating 4GB for KV cache relative to the 8GB GPU.
+*   **Fix:** Capped default sequence length to 16k on consumer hardware to prevent OS-level swapping.
+
+**Lessons Learned:** Comprehensive unit tests are necessary to catch silent failures. Integration tests comparing GPU vs CPU output helped isolate kernel-level bugs. Warning when model defaults exceed hardware limits is crucial.
 
 
 ## Technical Stack
@@ -191,7 +199,7 @@ Lighter++ includes a test suite to verify the mathematical correctness of its op
 - [ ] Quantization: INT4 weight compression.
 
 ### Phase IV: Production Features (Future)
-- [ ] LLaMA 3 Architecture Support.
+- [x] LLaMA 3 Architecture Support.
 - [ ] Prompt/Chat Interface.
 - [ ] Final Documentation and Benchmarks.
 

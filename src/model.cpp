@@ -3,9 +3,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 
 #ifdef USE_CUDA
 #include "kernels.cuh"
+// Helper for void* pointer arithmetic with precision-aware element size
+// base: void* pointer, offset: element offset, p: Config* with weight_precision
+#define WEIGHT_PTR(base, offset, p) \
+    ((char*)(base) + (offset) * ((p)->weight_precision == WEIGHT_FP16 ? 2 : 4))
 #endif
 
 #include "ops.h"
@@ -62,6 +67,8 @@ void malloc_run_state(RunState* s, Config* p) {
     cudaMalloc(&s->d_att, p->n_heads * p->seq_len * sizeof(float));
     cudaMalloc(&s->d_logits, p->vocab_size * sizeof(float));
 
+    cudaMalloc(&s->d_workspace_f16, hidden_dim * sizeof(uint16_t));
+
     cudaMalloc(&s->d_key_cache, kv_cache_size * sizeof(float));
     cudaMemset(s->d_key_cache, 0, kv_cache_size * sizeof(float));
     cudaMalloc(&s->d_value_cache, kv_cache_size * sizeof(float));
@@ -100,6 +107,7 @@ void free_run_state(RunState* s) {
     cudaFree(s->d_logits);
     cudaFree(s->d_key_cache);
     cudaFree(s->d_value_cache);
+    cudaFree(s->d_workspace_f16);
     #endif
 }
 
@@ -117,9 +125,9 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
 #ifdef USE_CUDA
     // ========== CUDA PATH ==========
     
-    cuda_gemv(s->d_q, s->d_xb, w->d_wq + layer_offset_qkv, dim, dim);
-    cuda_gemv(s->d_k, s->d_xb, w->d_wk + layer_offset_kv, kv_dim, dim);
-    cuda_gemv(s->d_v, s->d_xb, w->d_wv + layer_offset_kv, kv_dim, dim);
+    cuda_gemv(s->d_q, s->d_xb, WEIGHT_PTR(w->d_wq, layer_offset_qkv, p), s->d_workspace_f16, dim, dim, p->weight_precision);
+    cuda_gemv(s->d_k, s->d_xb, WEIGHT_PTR(w->d_wk, layer_offset_kv, p), s->d_workspace_f16, kv_dim, dim, p->weight_precision);
+    cuda_gemv(s->d_v, s->d_xb, WEIGHT_PTR(w->d_wv, layer_offset_kv, p), s->d_workspace_f16, kv_dim, dim, p->weight_precision);
 
     // RoPE on GPU
     cuda_rope(s->d_q, s->d_k, pos, dim, kv_dim, head_size, p->rope_base);
@@ -144,7 +152,7 @@ void attention(RunState* s, transformerWeights* w, Config* p, int layer, int pos
     cuda_aggregation_multihead(s->d_xb, s->d_value_cache + layer_v_offset, s->d_att, p->n_heads, pos + 1, head_size, gqa_factor, p->seq_len);
 
     // Output Projection (result stays in d_xb2 on device)
-    cuda_gemv(s->d_xb2, s->d_xb, w->d_wo + layer_offset_qkv, dim, dim);
+    cuda_gemv(s->d_xb2, s->d_xb, WEIGHT_PTR(w->d_wo, layer_offset_qkv, p), s->d_workspace_f16, dim, dim, p->weight_precision);
 
 #else
     // ========== CPU PATH ==========
@@ -205,10 +213,10 @@ void transformer_block(RunState* s, transformerWeights* w, Config* p, int layer,
     
     // FFN block: d_x = d_x + FFN(RMSNorm(d_x))
     cuda_rmsnorm(s->d_xb, s->d_x, w->d_rms_ffn_weight + layer_offset_norm, dim);
-    cuda_gemv(s->d_hb, s->d_xb, w->d_w1 + layer_offset_ffn, hidden_dim, dim);
-    cuda_gemv(s->d_he, s->d_xb, w->d_w3 + layer_offset_ffn, hidden_dim, dim);   
+    cuda_gemv(s->d_hb, s->d_xb, WEIGHT_PTR(w->d_w1, layer_offset_ffn, p), s->d_workspace_f16, hidden_dim, dim, p->weight_precision);
+    cuda_gemv(s->d_he, s->d_xb, WEIGHT_PTR(w->d_w3, layer_offset_ffn, p), s->d_workspace_f16, hidden_dim, dim, p->weight_precision);   
     cuda_swiglu(s->d_hb, s->d_hb, s->d_he, hidden_dim);
-    cuda_gemv(s->d_xb2, s->d_hb, w->d_w2 + layer_offset_ffn, dim, hidden_dim);
+    cuda_gemv(s->d_xb2, s->d_hb, WEIGHT_PTR(w->d_w2, layer_offset_ffn, p), s->d_workspace_f16, dim, hidden_dim, p->weight_precision);
     cuda_residual_add(s->d_x, s->d_x, s->d_xb2, dim);
 
 #else
@@ -342,7 +350,8 @@ int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, f
     
     // Final norm and classifier 
     cuda_rmsnorm(s->d_x, s->d_x, w->d_rms_final_weight, dim);
-    cuda_gemv(s->d_logits, s->d_x, w->d_w_cls, p->vocab_size, dim);
+    // Note: d_w_cls follows weight_precision, but if tied to embedding it's FP32
+    cuda_gemv(s->d_logits, s->d_x, w->d_w_cls, s->d_workspace_f16, p->vocab_size, dim, p->weight_precision);
     
     // Copy logits back to CPU ONCE at the end
     cudaMemcpy(s->logits, s->d_logits, p->vocab_size * sizeof(float), cudaMemcpyDeviceToHost);

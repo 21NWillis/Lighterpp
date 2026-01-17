@@ -1,12 +1,20 @@
 #ifndef MODEL_H
 #define MODEL_H
 
+#include "tensor.h"
+
+// Weight precision types for kernel dispatch
+// Extensible for future quantization (INT4, etc.)
+enum WeightPrecision : int {
+    WEIGHT_FP32 = 0,   // Standard 32-bit float
+    WEIGHT_FP16 = 1,   // Half precision (native on GPU)
+    WEIGHT_INT4 = 2    // Future: 4-bit quantized
+};
+
 #ifdef USE_CUDA
 #include "kernels.cuh"
 #include <cuda_runtime.h>
 #endif
-
-#include "tensor.h"
 
 // Hyperparameters for the Llama architecture
 struct Config {
@@ -18,6 +26,7 @@ struct Config {
     int vocab_size; // Vocabulary size (e.g. 32000)
     int seq_len;    // Maximum sequence length (context window)
     float rope_base; // RoPE frequency base (10000 for LLaMA 2, 500000 for LLaMA 3)
+    WeightPrecision weight_precision; // Precision of loaded weights
 };
 
 // Storage for model weights (read-only during inference)
@@ -42,28 +51,30 @@ struct transformerWeights {
     float* rms_final_weight; // (dim) Final RMSNorm
     float* w_cls; // (vocab_size, dim) Classifier weights (usually untied)
 
-    //CUDA - Same pointers as above
+    //CUDA device pointers
+    // Weight matrices use void* - cast to float* or __half* based on precision
+    // Embeddings/norms stay float* (always FP32)
     #ifdef USE_CUDA
-    float* d_token_embedding_table;
+    float* d_token_embedding_table;  // Always FP32 (embeddings)
 
-    float* d_rms_att_weight;
-    float* d_wq;
-    float* d_wk;
-    float* d_wv;
-    float* d_wo;
+    float* d_rms_att_weight;         // Always FP32 (norm weights are small)
+    void* d_wq;                      // Cast based on weight_precision
+    void* d_wk;
+    void* d_wv;
+    void* d_wo;
 
-    float* d_rms_ffn_weight;
-    float* d_w1;
-    float* d_w2;
-    float* d_w3;
+    float* d_rms_ffn_weight;         // Always FP32
+    void* d_w1;
+    void* d_w2;
+    void* d_w3;
 
-    float* d_rms_final_weight;
-    float* d_w_cls;
+    float* d_rms_final_weight;       // Always FP32
+    void* d_w_cls;
     #endif
 };
 
 // Runtime state storage (activation buffers and KV cache)
-struct RunState {
+typedef struct {
     // Current state buffers
     float *x;      // Activation at current layer (dim)
     float *xb;     // Buffer for attention/ffn output (dim)
@@ -95,8 +106,9 @@ struct RunState {
 
     float *d_key_cache;
     float *d_value_cache;
+    void* d_workspace_f16; // Scratch buffer for FP32->FP16 conversions
     #endif
-};
+} RunState;
 
 void malloc_run_state(RunState* s, Config* p);
 void free_run_state(RunState* s);

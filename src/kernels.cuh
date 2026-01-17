@@ -2,6 +2,8 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 
+enum WeightPrecision : int;
+
 // Define maximum shared memory floats for kernels to prevent overflow
 // 10240 floats = 40KB, safe for most GPUs (limit usually 48KB)
 // Supports hidden_dim up to 10240
@@ -18,7 +20,9 @@
 }
 
 // Kernel declarations matching .cu implementations
-void cuda_gemv(float* d_out, float* d_x, float* d_w, int n, int d);
+void cuda_convert_f32_to_f16(void* dst, float* src, int n);
+
+void cuda_gemv(float* d_out, float* d_x, void* d_w, void* d_workspace, int n, int d, WeightPrecision precision);
 void cuda_rmsnorm(float* d_out, float* d_x, float* d_w, int n);
 void cuda_rope(float* d_q, float* d_k, int pos, int dim, int kv_dim, int head_size, float rope_base);
 void cuda_swiglu(float* d_hb, float* d_h1, float* d_h3, int size);

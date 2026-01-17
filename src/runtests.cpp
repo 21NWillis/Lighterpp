@@ -11,6 +11,17 @@
 #ifdef USE_CUDA
 #include "kernels.cuh"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+
+// Helper: Convert float to half (CPU side)
+inline uint16_t float_to_half_bits(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(float));
+    uint16_t h = ((x >> 16) & 0x8000) |
+                 ((((x & 0x7f800000) - 0x38000000) >> 13) & 0x7c00) |
+                 ((x >> 13) & 0x03ff);
+    return h;
+}
 #endif
 
 #define GREEN "\033[0;32m"
@@ -327,11 +338,15 @@ int test_cuda_gemv() {
     cudaMemcpy(d_w, w, n * d * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemset(d_out, 0, n * sizeof(float));
     
-    cuda_gemv(d_out, d_x, d_w, n, d);
+    // Workspace for FP16 conversion (unused in FP32 but required by signature)
+    void* d_workspace;
+    cudaMalloc(&d_workspace, d * sizeof(float)); // Allocate generous size just in case
+
+    cuda_gemv(d_out, d_x, d_w, d_workspace, n, d, WEIGHT_FP32);
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
         printf(RED "FAILED" RESET " (CUDA error: %s)\n", cudaGetErrorString(err));
-        cudaFree(d_x); cudaFree(d_w); cudaFree(d_out);
+        cudaFree(d_x); cudaFree(d_w); cudaFree(d_out); cudaFree(d_workspace);
         free(x); free(w); free(out_cpu); free(out_gpu);
         return 1;
     }
@@ -353,7 +368,7 @@ int test_cuda_gemv() {
         }
     }
     
-    cudaFree(d_x); cudaFree(d_w); cudaFree(d_out);
+    cudaFree(d_x); cudaFree(d_w); cudaFree(d_out); cudaFree(d_workspace);
     
     if (passed) {
         free(x); free(w); free(out_cpu); free(out_gpu);
@@ -363,6 +378,92 @@ int test_cuda_gemv() {
         printf(RED "FAILED" RESET " (max diff=%f at idx=%d: cpu=%f gpu=%f)\n", 
                max_diff, fail_idx, out_cpu[fail_idx], out_gpu[fail_idx]);
         free(x); free(w); free(out_cpu); free(out_gpu);
+        return 1;
+    }
+}
+
+int test_cuda_gemv_f16() {
+    printf("Test: CUDA GEMV FP16... ");
+    
+    const int n = 256;  // output dim
+    const int d = 512;  // input dim (divisible by 4 for vectorization)
+    
+    float* x = (float*)malloc(d * sizeof(float));
+    float* w_f32 = (float*)malloc(n * d * sizeof(float));
+    uint16_t* w_f16 = (uint16_t*)malloc(n * d * sizeof(uint16_t));
+    float* out_cpu = (float*)malloc(n * sizeof(float));
+    float* out_gpu = (float*)malloc(n * sizeof(float));
+    
+    float* w_f32_gpu_src;
+    cudaMalloc(&w_f32_gpu_src, n * d * sizeof(float));
+    
+    // Initialize with simple pattern
+    for (int i = 0; i < d; i++) x[i] = 0.1f * (i % 10);
+    for (int i = 0; i < n * d; i++) {
+        w_f32[i] = 0.01f * (i % 100);
+    }
+    
+    // CPU reference (using F32 weights)
+    naive_matmul(out_cpu, x, w_f32, n, d);
+    
+    // GPU version with FP16 weights
+    float *d_x, *d_out;
+    void *d_w;
+    cudaMalloc(&d_x, d * sizeof(float));
+    cudaMalloc(&d_w, n * d * sizeof(uint16_t));  // Half the size!
+    cudaMalloc(&d_out, n * sizeof(float));
+    
+    cudaMemcpy(d_x, x, d * sizeof(float), cudaMemcpyHostToDevice);
+    
+    // Upload F32 weights then convert to F16 on GPU for accuracy
+    cudaMemcpy(w_f32_gpu_src, w_f32, n * d * sizeof(float), cudaMemcpyHostToDevice);
+    cuda_convert_f32_to_f16(d_w, w_f32_gpu_src, n * d);
+    cudaDeviceSynchronize();
+    
+    cudaMemset(d_out, 0, n * sizeof(float));
+    
+    // Workspace for FP16 conversion of input x
+    void* d_workspace;
+    cudaMalloc(&d_workspace, d * sizeof(uint16_t));
+    
+    cuda_gemv(d_out, d_x, d_w, d_workspace, n, d, WEIGHT_FP16);
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf(RED "FAILED" RESET " (CUDA error: %s)\n", cudaGetErrorString(err));
+        cudaFree(d_x); cudaFree(d_w); cudaFree(d_out); cudaFree(d_workspace);
+        free(x); free(w_f32); free(w_f16); free(out_cpu); free(out_gpu);
+        return 1;
+    }
+    
+    cudaMemcpy(out_gpu, d_out, n * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Compare (with looser tolerance for FP16)
+    bool passed = true;
+    float max_diff = 0.0f;
+    int fail_idx = -1;
+    for (int i = 0; i < n; i++) {
+        float diff = fabsf(out_cpu[i] - out_gpu[i]);
+        if (diff > max_diff) {
+            max_diff = diff;
+            fail_idx = i;
+        }
+        // FP16 has less precision - use 1% relative tolerance
+        float tol = 0.01f * fabsf(out_cpu[i]) + 1e-4f;
+        if (diff > tol) {
+            passed = false;
+        }
+    }
+    
+    cudaFree(d_x); cudaFree(d_w); cudaFree(d_out); cudaFree(d_workspace);
+    
+    if (passed) {
+        free(x); free(w_f32); free(w_f16); free(out_cpu); free(out_gpu);
+        printf(GREEN "PASSED" RESET "\n");
+        return 0;
+    } else {
+        printf(RED "FAILED" RESET " (max diff=%f at idx=%d: cpu=%f gpu=%f)\n", 
+               max_diff, fail_idx, out_cpu[fail_idx], out_gpu[fail_idx]);
+        free(x); free(w_f32); free(w_f16); free(out_cpu); free(out_gpu);
         return 1;
     }
 }
@@ -786,6 +887,7 @@ int main() {
 #ifdef USE_CUDA
     printf("\n--- CUDA Kernel Tests ---\n");
     failures += test_cuda_gemv();
+    failures += test_cuda_gemv_f16();
     failures += test_cuda_rmsnorm();
     failures += test_cuda_rope();
     failures += test_cuda_swiglu();

@@ -322,6 +322,14 @@ bool gguf_extract_config(GGUFFile* file, Config* config) {
               << ", rope_base=" << config->rope_base
               << std::endl;
     
+    // VRAM Safety: Clamp sequence length for consumer GPUs
+    // Llama 3 defaults to 131k, which requires ~4GB VRAM just for KV cache.
+    // We cap it to 16k (~500MB) to be safe on 8GB cards.
+    if (config->seq_len > 16384) {
+        std::cout << "GGUF Warning: Model requests " << config->seq_len << " seq_len. Clamping to 16384 to prevent VRAM overflow." << std::endl;
+        config->seq_len = 16384;
+    }
+
     return true;
 }
 
@@ -393,13 +401,41 @@ static void copy_tensor_data(float* dst, GGUFFile* file, GGUFTensorInfo* tensor)
     }
 }
 
-// (Function removed: unpermute_gguf_weights)
-// We now use GGUF's native adjacent-pair layout directly in the GPU kernel (rope.cu)
-// This avoids CPU-side shuffling and speeds up loading.
+
+
+#ifdef USE_CUDA
+
+// Upload tensor to a specific offset in an existing GPU buffer
+// Used for stacking per-layer weights
+static void upload_tensor_to_offset(GGUFFile* file, GGUFTensorInfo* tensor, 
+                                    void* d_buffer, size_t element_offset, size_t elem_size) {
+    void* src = gguf_tensor_data(file, tensor);
+    size_t nelements = 1;
+    for (uint32_t d = 0; d < tensor->n_dims; d++) {
+        nelements *= tensor->dims[d];
+    }
+    
+    size_t byte_offset = element_offset * elem_size;
+    size_t byte_size = nelements * elem_size;
+    
+    cudaMemcpy((char*)d_buffer + byte_offset, src, byte_size, cudaMemcpyHostToDevice);
+}
+#endif
 
 bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
     int head_size = p->dim / p->n_heads;
     int kv_dim = p->n_kv_heads * head_size;
+    
+    // Detect weight precision from first weight tensor
+    GGUFTensorInfo* sample = gguf_find_tensor(file, "blk.0.attn_q.weight");
+    if (sample && sample->type == GGML_TYPE_F16) {
+        p->weight_precision = WEIGHT_FP16;
+        std::cout << "GGUF: Detected FP16 weights" << std::endl;
+    } else {
+        p->weight_precision = WEIGHT_FP32;
+        std::cout << "GGUF: Detected FP32 weights" << std::endl;
+    }
+    size_t elem_size = (p->weight_precision == WEIGHT_FP16) ? 2 : 4;
     
     // Allocate weight arrays (stacked across all layers)
     w->token_embedding_table = (float*)malloc(p->vocab_size * p->dim * sizeof(float));
@@ -505,60 +541,97 @@ bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
     #ifdef USE_CUDA
     size_t size;
     
-
+    // Embeddings/norms always FP32
     size = p->vocab_size * p->dim * sizeof(float);
     cudaMalloc(&w->d_token_embedding_table, size);
     cudaMemcpy(w->d_token_embedding_table, w->token_embedding_table, size, cudaMemcpyHostToDevice);
 
-    if (w->w_cls == w->token_embedding_table) {
-        w->d_w_cls = w->d_token_embedding_table;  
-    } else {
-        size = p->vocab_size * p->dim * sizeof(float);
-        cudaMalloc(&w->d_w_cls, size);
-        cudaMemcpy(w->d_w_cls, w->w_cls, size, cudaMemcpyHostToDevice);
-    }
-    
     size = p->n_layers * p->dim * sizeof(float);
     cudaMalloc(&w->d_rms_att_weight, size);
     cudaMemcpy(w->d_rms_att_weight, w->rms_att_weight, size, cudaMemcpyHostToDevice);
-    
-    size = p->n_layers * p->dim * p->dim * sizeof(float);
-    cudaMalloc(&w->d_wq, size);
-    cudaMemcpy(w->d_wq, w->wq, size, cudaMemcpyHostToDevice);
-    
-    size = p->n_layers * p->dim * kv_dim * sizeof(float);
-    cudaMalloc(&w->d_wk, size);
-    cudaMemcpy(w->d_wk, w->wk, size, cudaMemcpyHostToDevice);
-    
-    size = p->n_layers * p->dim * kv_dim * sizeof(float);
-    cudaMalloc(&w->d_wv, size);
-    cudaMemcpy(w->d_wv, w->wv, size, cudaMemcpyHostToDevice);
-    
-    size = p->n_layers * p->dim * p->dim * sizeof(float);
-    cudaMalloc(&w->d_wo, size);
-    cudaMemcpy(w->d_wo, w->wo, size, cudaMemcpyHostToDevice);
     
     size = p->n_layers * p->dim * sizeof(float);
     cudaMalloc(&w->d_rms_ffn_weight, size);
     cudaMemcpy(w->d_rms_ffn_weight, w->rms_ffn_weight, size, cudaMemcpyHostToDevice);
     
-    size = p->n_layers * p->dim * p->hidden_dim * sizeof(float);
-    cudaMalloc(&w->d_w1, size);
-    cudaMemcpy(w->d_w1, w->w1, size, cudaMemcpyHostToDevice);
-    
-    size = p->n_layers * p->hidden_dim * p->dim * sizeof(float);
-    cudaMalloc(&w->d_w2, size);
-    cudaMemcpy(w->d_w2, w->w2, size, cudaMemcpyHostToDevice);
-    
-    size = p->n_layers * p->dim * p->hidden_dim * sizeof(float);
-    cudaMalloc(&w->d_w3, size);
-    cudaMemcpy(w->d_w3, w->w3, size, cudaMemcpyHostToDevice);
-    
     size = p->dim * sizeof(float);
     cudaMalloc(&w->d_rms_final_weight, size);
     cudaMemcpy(w->d_rms_final_weight, w->rms_final_weight, size, cudaMemcpyHostToDevice);
+
+    // Weight matrices: use elem_size (2 for F16, 4 for F32)
+    // Allocate GPU buffers for stacked weights
+    size = p->n_layers * p->dim * p->dim * elem_size;
+    cudaMalloc(&w->d_wq, size);
+    cudaMalloc(&w->d_wo, size);
     
-    std::cout << "GGUF: Copied weights to GPU" << std::endl;
+    size = p->n_layers * p->dim * kv_dim * elem_size;
+    cudaMalloc(&w->d_wk, size);
+    cudaMalloc(&w->d_wv, size);
+    
+    size = p->n_layers * p->dim * p->hidden_dim * elem_size;
+    cudaMalloc(&w->d_w1, size);
+    cudaMalloc(&w->d_w3, size);
+    
+    size = p->n_layers * p->hidden_dim * p->dim * elem_size;
+    cudaMalloc(&w->d_w2, size);
+    
+    // Upload per-layer weights directly from GGUF (preserves F16)
+    for (int layer = 0; layer < p->n_layers; layer++) {
+        snprintf(name, sizeof(name), "blk.%d.attn_q.weight", layer);
+        GGUFTensorInfo* t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_wq, layer * p->dim * p->dim, elem_size);
+        
+        snprintf(name, sizeof(name), "blk.%d.attn_k.weight", layer);
+        t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_wk, layer * p->dim * kv_dim, elem_size);
+        
+        snprintf(name, sizeof(name), "blk.%d.attn_v.weight", layer);
+        t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_wv, layer * p->dim * kv_dim, elem_size);
+        
+        snprintf(name, sizeof(name), "blk.%d.attn_output.weight", layer);
+        t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_wo, layer * p->dim * p->dim, elem_size);
+        
+        snprintf(name, sizeof(name), "blk.%d.ffn_gate.weight", layer);
+        t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_w1, layer * p->dim * p->hidden_dim, elem_size);
+        
+        snprintf(name, sizeof(name), "blk.%d.ffn_down.weight", layer);
+        t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_w2, layer * p->hidden_dim * p->dim, elem_size);
+        
+        snprintf(name, sizeof(name), "blk.%d.ffn_up.weight", layer);
+        t = gguf_find_tensor(file, name);
+        upload_tensor_to_offset(file, t, w->d_w3, layer * p->dim * p->hidden_dim, elem_size);
+    }
+    
+    // Classifier (output) weights
+    GGUFTensorInfo* t_cls = gguf_find_tensor(file, "output.weight");
+    if (t_cls) {
+        std::cout << "GGUF: Using separate output weights (Type: " << t_cls->type << ")" << std::endl;
+        size = p->vocab_size * p->dim * elem_size;
+        cudaMalloc(&w->d_w_cls, size);
+        void* src = gguf_tensor_data(file, t_cls);
+        cudaMemcpy(w->d_w_cls, src, size, cudaMemcpyHostToDevice);
+    } else {
+        std::cout << "GGUF: Tied weights detected (sharing with embeddings)" << std::endl;
+        if (p->weight_precision == WEIGHT_FP16) {
+            std::cout << "GGUF: Converting tied FP32 embeddings to FP16 for classifier..." << std::endl;
+            size = p->vocab_size * p->dim * sizeof(uint16_t);
+            cudaMalloc(&w->d_w_cls, size);
+            
+            // Declared in kernels.cuh: cuda_convert_f32_to_f16
+            cuda_convert_f32_to_f16(w->d_w_cls, w->d_token_embedding_table, p->vocab_size * p->dim);
+        } else {
+
+            w->d_w_cls = w->d_token_embedding_table;
+        }
+    }
+    
+    std::cout << "GGUF: Copied weights to GPU (" 
+              << (p->weight_precision == WEIGHT_FP16 ? "FP16" : "FP32") 
+              << ")" << std::endl;
     #endif
     
     std::cout << "GGUF: Loaded weights for " << p->n_layers << " layers" << std::endl;

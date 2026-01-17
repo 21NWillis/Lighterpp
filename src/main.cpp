@@ -7,6 +7,7 @@
 #include "tensor.h"
 #include "ops.h"
 #include "tokenizer.h"
+#include <chrono>
 #ifdef USE_CUDA
 #include "kernels.cuh"
 #include <cuda_runtime.h>
@@ -158,8 +159,6 @@ int main(int argc, char** argv) {
     int history[64];
     int current_history_len = 0;
     
-    clock_t start = clock();
-
     // 1. Prefill
     for (int i = 0; i < num_prompt_tokens - 1; i++) {
         // Add to history
@@ -170,9 +169,8 @@ int main(int argc, char** argv) {
             history[HISTORY_LEN - 1] = prompt_tokens[i];
         }
 
-        int next_token = forward(prompt_tokens[i], pos, &state, &weights, &config, 
-                                temperature, topp, 1.1f, history, current_history_len);
-        (void)next_token; // Ignore output, force next prompt token
+        int next_token = forward(prompt_tokens[i], pos, &state, &weights, &config, temperature, topp, 1.1f, history, current_history_len);
+        (void)next_token;
         
         char* token_str = decode_token(&tokenizer, prompt_tokens[i]);
         printf("%s", token_str);
@@ -195,6 +193,8 @@ int main(int argc, char** argv) {
     printf("%s", token_str);
     fflush(stdout);
     
+    auto start = std::chrono::high_resolution_clock::now();
+    
     // 3. Generation loop
     for (; pos < steps; pos++) {
         token = forward(token, pos, &state, &weights, &config, temperature, topp, 1.05f, history, current_history_len);
@@ -208,7 +208,9 @@ int main(int argc, char** argv) {
         }
         
         char* token_str = decode_token(&tokenizer, token);
-        if (token == 2 || strcmp(token_str, "</s>") == 0) { 
+        if (token == 2 || strcmp(token_str, "</s>") == 0 || 
+            token == 128001 || strcmp(token_str, "<|end_of_text|>") == 0 ||
+            token == 128009 || strcmp(token_str, "<|eot_id|>") == 0) { 
              break;
         }
         
@@ -220,13 +222,14 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
     
-    clock_t end = clock();
-    double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
     
     printf("\n\n--- Statistics ---\n");
-    printf("Tokens generated: %d\n", pos);
-    printf("Elapsed time: %.2f s\n", elapsed);
-    printf("Tokens per second: %.2f tok/s\n", (float)pos / elapsed);
+    int generated_count = pos - num_prompt_tokens;
+    printf("Tokens generated: %d\n", generated_count);
+    printf("Elapsed time: %.2f s\n", elapsed.count());
+    printf("Tokens per second: %.2f tok/s\n", (float)generated_count / elapsed.count());
 
     #ifdef USE_CUDA
     free_weights_cuda(&weights);

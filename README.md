@@ -25,7 +25,9 @@ The entire transformer forward pass now runs on the GPU. The attention mechanism
 | Version | Engine | Precision | Performance (tok/s) | Notes |
 | :---: | :--- | :---: | :---: | :--- |
 | **v0.1** | **Lighter++ (GPU)** | FP32 | **45** | Basic GPU-Resident Inference |
-| **v0.2** | **Lighter++ (GPU)** | FP16 | **72** | Native Half-Precision (Coming Soon) |
+| **v0.2** | **Lighter++ (GPU)** | FP16 | **72** | Native Half-Precision |
+
+(*Achieved 1.6x speedup over v0.1*)
 
 
 ## Key Architectural Decisions

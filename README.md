@@ -80,7 +80,7 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
 
 #### 6. Llama 3 Performance "Tank"
 *   **Cause:** Static shared memory allocation (40KB) limited occupancy to 2 blocks/SM. The massive 128k vocabulary grid launch serialized and crawled.
-*   **Fix:** Implemented **Dynamic Shared Memory** to request exact size (~4KB), increasing parallelism 10x.
+*   **Fix:** Implemented **Dynamic Shared Memory** to request exact size (~4KB), increasing SM occupancy and parallelism 10x.
 
 #### 7. VRAM Exhaustion
 *   **Cause:** Llama 3 defaulted to 131k context window, allocating 4GB for KV cache relative to the 8GB GPU.

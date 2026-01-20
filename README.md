@@ -28,6 +28,8 @@ The entire transformer forward pass now runs on the GPU. The attention mechanism
 | **v0.2** | **Lighter++ (GPU)** | FP16 | **72** | Native Half-Precision |
 
 (*Achieved 1.6x speedup over v0.1*)
+(*Note: Current performance is actually 85 tok/s, due to a recent CPU upgrade. Will
+update benchmarks with the next update to reflect this.* )
 
 
 ## Key Architectural Decisions

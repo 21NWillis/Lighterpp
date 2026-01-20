@@ -109,7 +109,7 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
 │   ├── main.cpp          # Application entry point
 │   ├── runtests.cpp      # Unit testing suite
 │   ├── matmul.cu         # CUDA GEMV kernel
-│   ├── multihead.cu      # CUDA Multi-Head Attention kernel
+│   ├── multihead_gemv.cu # CUDA Multi-Head Attention kernel
 │   ├── RMSNorm.cu        # CUDA RMSNorm kernel
 │   ├── rope.cu           # CUDA RoPE kernel
 │   ├── swiglu.cu         # CUDA SwiGLU kernel

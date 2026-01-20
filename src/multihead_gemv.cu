@@ -6,16 +6,24 @@
 #define HEAD_SIZE_MAX 128
 
 __global__ void multihead_gemv_kernel_optimized(float* d_out, float* d_q, float* d_k_cache, int layer, int pos, int n_heads, int n_kv_heads, int head_size, int seq_len) {
+    __shared__ __align__(16) float q_shared[HEAD_SIZE_MAX];
     
     int h = blockIdx.y;
     int warp_id = threadIdx.y;
     int lane_id = threadIdx.x;
     
+    int tid_linear = threadIdx.y * 32 + threadIdx.x;
+    if (tid_linear < head_size) {
+        q_shared[tid_linear] = d_q[h * head_size + tid_linear];
+    }
+    
+    __syncthreads();
+    
     int t = blockIdx.x * blockDim.y + warp_id;
     
     if (t > pos) return;
 
-    float* q_head = d_q + h * head_size;
+    float* q_head = q_shared;
     
     int kv_head = h / (n_heads / n_kv_heads);
     long long layer_offset = (long long)layer * n_kv_heads * seq_len * head_size;

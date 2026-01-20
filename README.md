@@ -65,26 +65,21 @@ A subtle bug caused the model to fall into nonsensical loops (e.g., "flowers to 
 
 ### Phase III Bugs (CUDA Era)
 
-#### 3. The "Attention Stride Mismatch" Bug
-After implementing multi-head aggregation, the model produced garbage output despite individual kernels passing unit tests.
-*   **Cause:** Attention scores were being copied to GPU assuming contiguous layout (`pos+1` per head), but the actual layout used stride `seq_len` between heads. This caused data corruption across head boundaries.
-*   **Fix:** Updated memory copies and kernel indexing to use `att_stride` parameter matching the actual strided layout.
-
-#### 4. The "CPU Path Broke After Refactor" Bug
+#### 3. The "CPU Path Broke After Refactor" Bug
 After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions, the CPU build failed to compile.
 *   **Cause:** CPU code paths still referenced the removed parameters.
 *   **Fix:** Updated CPU paths to use `s->xb` directly instead of function parameters.
 
-#### 5. GGUF Integration Issues
+#### 4. GGUF Integration Issues
 *   **Shared Memory Overflow:**
     *   **Cause:** Hardcoded 4096 float buffer in `gemv_kernel` overflowed with larger models (5632 dim), causing silent corruption.
     *   **Fix:** Increased buffer to 40KB (10240 floats) and added runtime safety check.
 
-#### 6. Llama 3 Performance "Tank"
+#### 5. Llama 3 Performance "Tank"
 *   **Cause:** Static shared memory allocation (40KB) limited occupancy to 2 blocks/SM. The massive 128k vocabulary grid launch serialized and crawled.
 *   **Fix:** Implemented **Dynamic Shared Memory** to request exact size (~4KB), increasing SM occupancy and parallelism 10x.
 
-#### 7. VRAM Exhaustion
+#### 6. VRAM Exhaustion
 *   **Cause:** Llama 3 defaulted to 131k context window, allocating 4GB for KV cache relative to the 8GB GPU.
 *   **Fix:** Capped default sequence length to 16k on consumer hardware to prevent OS-level swapping.
 

@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
     printf("%s", token_str);
     fflush(stdout);
     
-    auto start = std::chrono::high_resolution_clock::now();
+    auto start = std::chrono::steady_clock::now();
     
     // 3. Generation loop
     for (; pos < steps; pos++) {
@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
     
-    auto end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = end - start;
     
     printf("\n\n--- Statistics ---\n");

@@ -32,3 +32,4 @@ void cuda_aggregation_multihead(float* d_out, const float* d_v, const float* d_a
 void cuda_residual_add(float* d_out, const float* d_a, const float* d_b, int n);
 void cuda_scatter_kv(float* d_key_cache, float* d_value_cache, const float* d_k, const float* d_v, int layer, int pos, int n_kv_heads, int head_size, int seq_len);
 void cuda_multihead_gemv(float* d_out, float* d_q, float* d_k_cache, int layer, int pos, int n_heads, int n_kv_heads, int head_size, int seq_len);
+void cuda_sample(float* d_logits, int vocab_size,float temperature,float topp,float penalty,int* d_history,int history_len,int* d_sampled_token,unsigned int* d_rng_state);

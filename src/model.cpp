@@ -73,6 +73,10 @@ void malloc_run_state(RunState* s, Config* p) {
     cudaMemset(s->d_key_cache, 0, kv_cache_size * sizeof(float));
     cudaMalloc(&s->d_value_cache, kv_cache_size * sizeof(float));
     cudaMemset(s->d_value_cache, 0, kv_cache_size * sizeof(float));
+    
+    // GPU sampling buffers
+    cudaMalloc(&s->d_sampled_token, sizeof(int));
+    cudaMalloc(&s->d_history, p->seq_len * sizeof(int));
     #endif
 }
 
@@ -108,6 +112,8 @@ void free_run_state(RunState* s) {
     cudaFree(s->d_key_cache);
     cudaFree(s->d_value_cache);
     cudaFree(s->d_workspace_f16);
+    cudaFree(s->d_sampled_token);
+    cudaFree(s->d_history);
     #endif
 }
 
@@ -247,8 +253,7 @@ int compare_prob(const void* a, const void* b) {
     return 0;
 }
 
-int sample(float* logits, int vocab_size, float temperature, float topp, 
-           float penalty, int* history, int history_len) {
+int sample(float* logits, int vocab_size, float temperature, float topp, float penalty, int* history, int history_len) {
     
     // Apply repetition penalty
     if (penalty > 1.0f && history && history_len > 0) {
@@ -350,11 +355,20 @@ int forward(int token, int pos, RunState* s, transformerWeights* w, Config* p, f
     
     // Final norm and classifier 
     cuda_rmsnorm(s->d_x, s->d_x, w->d_rms_final_weight, dim);
-    // Note: d_w_cls follows weight_precision, but if tied to embedding it's FP32
     cuda_gemv(s->d_logits, s->d_x, w->d_w_cls, s->d_workspace_f16, p->vocab_size, dim, p->weight_precision);
     
-    // Copy logits back to CPU ONCE at the end
-    cudaMemcpy(s->logits, s->d_logits, p->vocab_size * sizeof(float), cudaMemcpyDeviceToHost);
+    // GPU sampling: copy history to device if using repetition penalty
+    if (penalty > 1.0f && history != nullptr && history_len > 0) {
+        cudaMemcpy(s->d_history, history, history_len * sizeof(int), cudaMemcpyHostToDevice);
+    }
+    
+    // Sample on GPU
+    cuda_sample(s->d_logits, p->vocab_size, temperature, topp, penalty, (penalty > 1.0f) ? s->d_history : nullptr, history_len, s->d_sampled_token, nullptr);
+    
+    // Copy single int result back
+    int sampled_token;
+    cudaMemcpy(&sampled_token, s->d_sampled_token, sizeof(int), cudaMemcpyDeviceToHost);
+    return sampled_token;
 #else
     memcpy(s->x, content_row, dim * sizeof(float));
     

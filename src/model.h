@@ -107,6 +107,9 @@ typedef struct {
     float *d_key_cache;
     float *d_value_cache;
     void* d_workspace_f16; // Scratch buffer for FP32->FP16 conversions
+    
+    int* d_sampled_token;  // [1] output from cuda_sample
+    int* d_history;        // [seq_len] for repetition penalty
     #endif
 } RunState;
 

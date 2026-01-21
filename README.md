@@ -7,7 +7,7 @@
 
 
 ![Lighter++ Demo](assets/demo.gif)
-*(Running inference on the Tinyllama 1.1B parameter model)*
+*(Running inference on the Llama 3.2 1B parameter model)*
 
 ## Abstract
 Lighter++ is a high-performance, custom-built Inference Engine for Large Language Models (LLMs), specifically targeting the Llama 2 architecture. Implemented entirely in C++ and CUDA without using existing frameworks like PyTorch or TensorFlow. This is to learn and demonstrate a "from-scratch" understanding of tensor operations, memory management, and hardware optimization.
@@ -15,22 +15,27 @@ Lighter++ is a high-performance, custom-built Inference Engine for Large Languag
 The engine currently supports loading **GGUF** model checkpoints (e.g., `tinyllama-1.1b-chat.gguf`), enabling support for real-world models. It also has legacy support for loading `llama2.c` compatible model checkpoints (e.g., `stories15M.bin`, `stories110M.bin`).
 
 ## Current Status: GPU-Resident Inference
-The entire transformer forward pass now runs on the GPU. The attention mechanism requires only **one memory copy in** (token embedding) and **one memory copy out** (logits) per token. All intermediate computations—RMSNorm, RoPE, Q/K/V projections, attention scoring, softmax, aggregation, FFN—remain on device memory throughout inference.
+The entire transformer forward pass now runs on the GPU with **zero CPU involvement** per token. The only memory transfers are the token embedding in (once per token) and the sampled token ID out (4 bytes). All intermediate computations—RMSNorm, RoPE, Q/K/V projections, attention scoring, softmax, aggregation, FFN, and sampling—remain on device memory throughout inference.
 
 
 ### Performance Benchmarks
-**Hardware:** AMD Ryzen 7 3700X, NVIDIA RTX 3070 (8GB VRAM), WSL2 (Ubuntu)
+**Hardware:** AMD Ryzen 7 5700x3d, NVIDIA RTX 3070 (8GB VRAM), WSL2 (Ubuntu)
 
-#### TinyLlama-1.1B-Chat
-| Version | Engine | Precision | Performance (tok/s) | Notes |
-| :---: | :--- | :---: | :---: | :--- |
-| **v0.1** | **Lighter++ (GPU)** | FP32 | **45** | Basic GPU-Resident Inference |
-| **v0.2** | **Lighter++ (GPU)** | FP16 | **72** | Native Half-Precision |
+#### TinyLlama-1.1B-Chat (FP16)
+| Version | Performance | Notes |
+| :---: | :---: | :--- |
+| v0.1 | 45 tok/s | Basic GPU-Resident (FP32) |
+| v0.2 | 72 tok/s | Native Half-Precision |
+| **v0.3** | **104 tok/s** | **Fused GPU Sampling (1.3x)** |
 
-(*Achieved 1.6x speedup over v0.1*)
-(*Note: Current performance is actually 85 tok/s, due to a recent CPU upgrade. Will
-update benchmarks with the next update to reflect this.* )
 
+#### Llama 3.2 1B (FP16, 128K vocab)
+| Version | Performance | Notes |
+| :---: | :---: | :--- |
+| v0.2 | 40 tok/s | CPU sampling bottleneck |
+| **v0.3** | **93 tok/s** | **Fused GPU Sampling (2.3x)** |
+
+(*Note: Speedups are slightly artificial due to a CPU upgrade. Going forward, this is the standard CPU used for benchmarking.*)
 
 ## Key Architectural Decisions
 
@@ -47,6 +52,11 @@ update benchmarks with the next update to reflect this.* )
 *   **Warp-Level Reductions:** Several kernels use `__shfl_down_sync` for fast intra-warp communication, avoiding shared memory bank conflicts.
 *   **Float4 Vectorization:** Memory-bound kernels (Scale, Residual Add) use `float4` loads/stores for 4x memory throughput improvement. 
 *   **Float2 Vectorization:** RoPE uses `float2` for each pair of dimensions.
+
+### Fused GPU Sampling
+*   **Single Kernel Sampling:** Instead of copying 512KB of logits back to CPU (128K vocab × 4 bytes), sampling runs entirely on GPU in a single fused kernel that performs repetition penalty, temperature scaling, softmax, and categorical sampling.
+*   **4-Byte Result:** Only the final token ID (4 bytes) is copied back to host, eliminating a major PCIe bottleneck.
+*   **Impact:** 2.3x speedup on Llama 3 (40 → 93 tok/s) by eliminating CPU softmax over 128K vocabulary.
 
 
 ## Difficult Issues & Bug Log
@@ -113,6 +123,7 @@ After removing unused parameters (`in`, `out`, `x`) from GPU-optimized functions
 │   ├── aggregation.cu    # CUDA Aggregation kernel (multi-head)
 │   ├── residual.cu       # CUDA Residual Add kernel
 │   ├── scatter_kv.cu     # CUDA KV Cache scatter kernel
+│   ├── sample.cu         # CUDA Fused Sampling kernel
 │   └── kernels.cuh       # CUDA kernel declarations
 ├── CMakeLists.txt        # Build configuration
 └── README.md             # Documentation
@@ -211,9 +222,10 @@ Lighter++ includes a test suite to verify the mathematical correctness of its op
 | :--- | :---: | :--- |
 | **Lighter++ (CPU)** | 11 | Single-threaded CPU baseline |
 | **llama2.c** | 12 | Reference implementation (CPU) |
-| **Lighter++ (GPU)** | 128 | Full CUDA acceleration |
+| **Lighter++ (GPU v0.2)** | 128 | Full CUDA acceleration |
+| **Lighter++ (GPU v0.3)** | 250 | Fused GPU Sampling |
 
-*GPU achieves ~11x speedup over single-threaded CPU baseline*
+*GPU v0.3 achieves ~23x speedup over single-threaded CPU baseline*
 </details>
 
 ## Acknowledgments

@@ -26,14 +26,14 @@ The entire transformer forward pass now runs on the GPU with **zero CPU involvem
 | :---: | :---: | :--- |
 | v0.1 | 45 tok/s | Basic GPU-Resident (FP32) |
 | v0.2 | 72 tok/s | Native Half-Precision |
-| **v0.3** | **104 tok/s** | **Fused GPU Sampling (1.3x)** |
+| **v0.3** | **115 tok/s** | **Fused GPU Sampling (1.6x)** |
 
 
 #### Llama 3.2 1B (FP16, 128K vocab)
 | Version | Performance | Notes |
 | :---: | :---: | :--- |
 | v0.2 | 40 tok/s | CPU sampling bottleneck |
-| **v0.3** | **95 tok/s** | **Fused GPU Sampling (2.3x)** |
+| **v0.3** | **105 tok/s** | **Fused GPU Sampling (2.6x)** |
 
 (*Note: Speedups are slightly artificial due to a CPU upgrade. Going forward, this is the standard CPU used for benchmarking.*)
 

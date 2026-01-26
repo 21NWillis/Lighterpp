@@ -132,17 +132,78 @@ __global__ void fused_sample_kernel(float* logits, int vocab_size, float tempera
     }
     __syncthreads();
     
+    float threshold = rand_val * global_sum;
+    threshold = fminf(threshold, global_sum * 0.999999f);
+    __shared__ int found_idx;
+    __shared__ float row_prefix;
+    __shared__ float row_warp_totals[8];
+    __shared__ float row_total;
+    
     if (tid == 0) {
-        float threshold = rand_val * global_sum;
-        float cumsum = 0.0f;
-        for (int i = 0; i < vocab_size; i++) {
-            cumsum += logits[i];
-            if (cumsum > threshold) {
-                result[0] = i;
-                return;
-            }
+        found_idx = vocab_size - 1;
+        row_prefix = 0.0f;
+    }
+    __syncthreads();
+    
+    int num_rows = (vocab_size + blockDim.x - 1) / blockDim.x;
+    for (int row = 0; row < num_rows; row++) {
+        int idx = row * blockDim.x + tid;
+        float val = (idx < vocab_size) ? logits[idx] : 0.0f;
+        
+        float row_cumsum = val;
+        float tmp;
+        tmp = __shfl_up_sync(0xFFFFFFFF, row_cumsum, 1);
+        if (lane_id >= 1) row_cumsum += tmp;
+        tmp = __shfl_up_sync(0xFFFFFFFF, row_cumsum, 2);
+        if (lane_id >= 2) row_cumsum += tmp;
+        tmp = __shfl_up_sync(0xFFFFFFFF, row_cumsum, 4);
+        if (lane_id >= 4) row_cumsum += tmp;
+        tmp = __shfl_up_sync(0xFFFFFFFF, row_cumsum, 8);
+        if (lane_id >= 8) row_cumsum += tmp;
+        tmp = __shfl_up_sync(0xFFFFFFFF, row_cumsum, 16);
+        if (lane_id >= 16) row_cumsum += tmp;
+        
+        if (lane_id == 31) {
+            row_warp_totals[warp_id] = row_cumsum;
         }
-        result[0] = vocab_size - 1; 
+        __syncthreads();
+        
+
+        if (warp_id == 0 && lane_id < 8) {
+            float wv = row_warp_totals[lane_id];
+            float t;
+            t = __shfl_up_sync(0xFF, wv, 1);
+            if (lane_id >= 1) wv += t;
+            t = __shfl_up_sync(0xFF, wv, 2);
+            if (lane_id >= 2) wv += t;
+            t = __shfl_up_sync(0xFF, wv, 4);
+            if (lane_id >= 4) wv += t;
+            if (lane_id == 7) row_total = wv;
+            float exc = __shfl_up_sync(0xFF, wv, 1);
+            if (lane_id == 0) exc = 0.0f;
+            row_warp_totals[lane_id] = exc;
+        }
+        __syncthreads();
+        
+        float my_intra_exc = __shfl_up_sync(0xFFFFFFFF, row_cumsum, 1);
+        if (lane_id == 0) my_intra_exc = 0.0f;
+        
+        float exclusive_cumsum = row_prefix + row_warp_totals[warp_id] + my_intra_exc;
+        float inclusive_cumsum = exclusive_cumsum + val;
+        
+        if (idx < vocab_size && exclusive_cumsum <= threshold && inclusive_cumsum > threshold) {
+            atomicMin(&found_idx, idx);
+        }
+        __syncthreads();
+        
+        if (tid == 0) {
+            row_prefix += row_total;
+        }
+        __syncthreads();
+    }
+    
+    if (tid == 0) {
+        result[0] = found_idx;
     }
 }
 

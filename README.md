@@ -33,7 +33,7 @@ The entire transformer forward pass now runs on the GPU with **zero CPU involvem
 | Version | Performance | Notes |
 | :---: | :---: | :--- |
 | v0.2 | 40 tok/s | CPU sampling bottleneck |
-| **v0.3** | **93 tok/s** | **Fused GPU Sampling (2.3x)** |
+| **v0.3** | **95 tok/s** | **Fused GPU Sampling (2.3x)** |
 
 (*Note: Speedups are slightly artificial due to a CPU upgrade. Going forward, this is the standard CPU used for benchmarking.*)
 

@@ -71,22 +71,15 @@ __global__ void gemv_kernel(float* out, float* x, float* w, int n, int d) {
 
 __global__ void gemv_f16_kernel(float* out, __half* x, __half* w, int n, int d) {
     __shared__ float warp_sums[32];
-    extern __shared__ __align__(16) char shared_mem[];
-    __half* x_shared = reinterpret_cast<__half*>(shared_mem);
     
     int row = blockIdx.x;
     int tid = threadIdx.x;
     int lane_id = tid % 32;
     int warp_id = tid / 32;
     int num_warps = blockDim.x / 32;
-
-    for (int i = tid; i < d; i += blockDim.x) {
-        x_shared[i] = x[i];
-    }
-    __syncthreads();
     
     __half* w_row = w + row * d;
-    float local_sum = 0.0f; // Remainder accumulation in float
+    float local_sum = 0.0f;
     
     // Initialize FP16 accumulator
     half2 sum_h2 = __float2half2_rn(0.0f);
@@ -94,7 +87,7 @@ __global__ void gemv_f16_kernel(float* out, __half* x, __half* w, int n, int d) 
     int vec_loops = d / 8;
     for (int i = tid; i < vec_loops; i += blockDim.x) {
         float4 w_vec_raw = reinterpret_cast<float4*>(w_row)[i];
-        float4 x_vec_raw = reinterpret_cast<float4*>(x_shared)[i];
+        float4 x_vec_raw = reinterpret_cast<float4*>(x)[i];
         
         half2* w_h2 = reinterpret_cast<half2*>(&w_vec_raw);
         half2* x_h2 = reinterpret_cast<half2*>(&x_vec_raw);
@@ -110,7 +103,7 @@ __global__ void gemv_f16_kernel(float* out, __half* x, __half* w, int n, int d) 
     
     int start_rem = vec_loops * 8;
     for (int i = start_rem + tid; i < d; i += blockDim.x) {
-        local_sum += __half2float(w_row[i]) * __half2float(x_shared[i]);
+        local_sum += __half2float(w_row[i]) * __half2float(x[i]);
     }
     
     local_sum += __shfl_down_sync(0xFFFFFFFF, local_sum, 16);
@@ -142,11 +135,7 @@ void cuda_gemv(float* d_out, float* d_x, void* d_w, void* d_workspace, int n, in
     switch (precision) {
         case WEIGHT_FP16: {
             cuda_convert_f32_to_f16(d_workspace, d_x, d);
-            
-            size_t shared_mem_size = d * sizeof(unsigned short);
-            if (shared_mem_size % 16 != 0) shared_mem_size += (16 - (shared_mem_size % 16));
-            
-            gemv_f16_kernel<<<n, BLOCK_SIZE, shared_mem_size>>>(d_out, (__half*)d_workspace, (__half*)d_w, n, d);
+            gemv_f16_kernel<<<n, BLOCK_SIZE>>>(d_out, (__half*)d_workspace, (__half*)d_w, n, d);
             checkCuda(cudaGetLastError());
             break;
         }

@@ -32,7 +32,7 @@ if(USE_CUDA)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED True)
-    set(CMAKE_CUDA_ARCHITECTURES "70;75;80;86")
+    set(CMAKE_CUDA_ARCHITECTURES "80;86")
     
     # Add CUDA sources
     set(CUDA_SOURCES src/matmul.cu src/RMSNorm.cu src/rope.cu src/swiglu.cu src/softmax.cu src/aggregation.cu src/scale.cu src/residual.cu src/scatter_kv.cu src/multihead_gemv.cu src/sample.cu)

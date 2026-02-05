@@ -435,7 +435,9 @@ bool gguf_init_weights(GGUFFile* file, transformerWeights* w, Config* p) {
         p->weight_precision = WEIGHT_FP32;
         std::cout << "GGUF: Detected FP32 weights" << std::endl;
     }
+#ifdef USE_CUDA
     size_t elem_size = (p->weight_precision == WEIGHT_FP16) ? 2 : 4;
+#endif
     
     // Allocate weight arrays (stacked across all layers)
     w->token_embedding_table = (float*)malloc(p->vocab_size * p->dim * sizeof(float));

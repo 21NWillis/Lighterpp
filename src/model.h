@@ -88,10 +88,10 @@ typedef struct {
     float *att;    // Attention scores (n_heads, seq_len)
     float *logits; // Output logits (vocab_size)
 
-    // KV Cache (FP16 for memory efficiency)
+    // KV Cache (Host side remains FP32 for simplicity)
     // Shape: (n_layers, kv_heads, seq_len, head_size)
-    void *key_cache;
-    void *value_cache;
+    float *key_cache;
+    float *value_cache;
 
     #ifdef USE_CUDA
     float *d_x;

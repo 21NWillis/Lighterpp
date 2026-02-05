@@ -47,8 +47,8 @@ void malloc_run_state(RunState* s, Config* p) {
     // KV CACHE
     int kv_cache_size = p->n_layers * p->seq_len * kv_dim;
     
-    s->key_cache = (float*)calloc(kv_cache_size, sizeof(float));
-    s->value_cache = (float*)calloc(kv_cache_size, sizeof(float));
+    s->key_cache = calloc(kv_cache_size, sizeof(uint16_t));
+    s->value_cache = calloc(kv_cache_size, sizeof(uint16_t));
 
     if (!s->x || !s->key_cache) {
         printf("Malloc failed! System out of memory?\n");
@@ -69,10 +69,10 @@ void malloc_run_state(RunState* s, Config* p) {
 
     cudaMalloc(&s->d_workspace_f16, hidden_dim * sizeof(uint16_t));
 
-    cudaMalloc(&s->d_key_cache, kv_cache_size * sizeof(float));
-    cudaMemset(s->d_key_cache, 0, kv_cache_size * sizeof(float));
-    cudaMalloc(&s->d_value_cache, kv_cache_size * sizeof(float));
-    cudaMemset(s->d_value_cache, 0, kv_cache_size * sizeof(float));
+    cudaMalloc(&s->d_key_cache, kv_cache_size * sizeof(__half));
+    cudaMemset(s->d_key_cache, 0, kv_cache_size * sizeof(__half));
+    cudaMalloc(&s->d_value_cache, kv_cache_size * sizeof(__half));
+    cudaMemset(s->d_value_cache, 0, kv_cache_size * sizeof(__half));
     
     // GPU sampling buffers
     cudaMalloc(&s->d_sampled_token, sizeof(int));

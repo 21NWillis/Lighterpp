@@ -14,6 +14,7 @@ enum WeightPrecision : int {
 #ifdef USE_CUDA
 #include "kernels.cuh"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #endif
 
 // Hyperparameters for the Llama architecture
@@ -87,10 +88,10 @@ typedef struct {
     float *att;    // Attention scores (n_heads, seq_len)
     float *logits; // Output logits (vocab_size)
 
-    // KV Cache
+    // KV Cache (FP16 for memory efficiency)
     // Shape: (n_layers, kv_heads, seq_len, head_size)
-    float *key_cache;   
-    float *value_cache;
+    void *key_cache;
+    void *value_cache;
 
     #ifdef USE_CUDA
     float *d_x;
@@ -104,8 +105,8 @@ typedef struct {
     float *d_att;
     float *d_logits;
 
-    float *d_key_cache;
-    float *d_value_cache;
+    __half *d_key_cache;
+    __half *d_value_cache;
     void* d_workspace_f16; // Scratch buffer for FP32->FP16 conversions
     
     int* d_sampled_token;  // [1] output from cuda_sample

@@ -814,17 +814,15 @@ int test_cuda_aggregation() {
     float* out_cpu = (float*)malloc(out_size * sizeof(float));
     float* out_gpu = (float*)malloc(out_size * sizeof(float));
     
-    // Initialize with simple patterns
     for (int i = 0; i < v_cache_size; i++) v_cache[i] = 0.1f * (i % 10);
     for (int h = 0; h < n_heads; h++) {
         float sum = 0.0f;
         for (int t = 0; t < seq_len; t++) {
-            att[h * att_stride + t] = 1.0f / seq_len;  // Uniform attention
+            att[h * att_stride + t] = 1.0f / seq_len;
             sum += att[h * att_stride + t];
         }
     }
     
-    // CPU reference
     for (int h = 0; h < n_heads; h++) {
         int kv_head = h / gqa_factor;
         for (int i = 0; i < head_size; i++) {
@@ -836,13 +834,18 @@ int test_cuda_aggregation() {
         }
     }
     
-    // GPU version
-    float *d_v, *d_att, *d_out;
-    cudaMalloc(&d_v, v_cache_size * sizeof(float));
+    __half *d_v;
+    float *d_att, *d_out;
+    cudaMalloc(&d_v, v_cache_size * sizeof(__half));
     cudaMalloc(&d_att, att_size * sizeof(float));
     cudaMalloc(&d_out, out_size * sizeof(float));
     
-    cudaMemcpy(d_v, v_cache, v_cache_size * sizeof(float), cudaMemcpyHostToDevice);
+    float* d_v_f32;
+    cudaMalloc(&d_v_f32, v_cache_size * sizeof(float));
+    cudaMemcpy(d_v_f32, v_cache, v_cache_size * sizeof(float), cudaMemcpyHostToDevice);
+    cuda_convert_f32_to_f16(d_v, d_v_f32, v_cache_size);
+    cudaFree(d_v_f32);
+    
     cudaMemcpy(d_att, att, att_size * sizeof(float), cudaMemcpyHostToDevice);
     
     cuda_aggregation_multihead(d_out, d_v, d_att, n_heads, seq_len, head_size, gqa_factor, att_stride);
@@ -850,10 +853,10 @@ int test_cuda_aggregation() {
     
     cudaMemcpy(out_gpu, d_out, out_size * sizeof(float), cudaMemcpyDeviceToHost);
     
-    // Compare
     bool passed = true;
     for (int i = 0; i < out_size; i++) {
-        if (!is_close_gpu(out_cpu[i], out_gpu[i])) {
+        float tol = 0.01f * fabsf(out_cpu[i]) + 1e-4f;
+        if (fabsf(out_cpu[i] - out_gpu[i]) > tol) {
             passed = false;
             break;
         }
